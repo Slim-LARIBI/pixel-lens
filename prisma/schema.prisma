@@ -1,0 +1,250 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// Auth Models (NextAuth)
+// ============================================================================
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts         Account[]
+  sessions         Session[]
+  workspaceMembers WorkspaceMember[]
+  auditLogs        AuditLog[]
+
+  @@map("users")
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// ============================================================================
+// Multi-tenant Models
+// ============================================================================
+
+enum WorkspacePlan {
+  FREE
+  STARTER
+  PRO
+}
+
+enum WorkspaceMemberRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+model Workspace {
+  id        String        @id @default(cuid())
+  name      String
+  slug      String        @unique
+  plan      WorkspacePlan @default(FREE)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  // Stripe
+  stripeCustomerId       String?
+  stripeSubscriptionId   String?
+  subscriptionStatus     String? // active, canceled, past_due, etc.
+  subscriptionEndsAt     DateTime?
+  trialEndsAt            DateTime?
+
+  // Branding
+  logoUrl     String?
+  brandColor  String? // hex color
+  reportTitle String? // custom title for reports
+
+  members    WorkspaceMember[]
+  invites    Invite[]
+  scans      Scan[]
+  shareLinks ShareLink[]
+  usage      Usage[]
+  auditLogs  AuditLog[]
+
+  @@map("workspaces")
+}
+
+model WorkspaceMember {
+  id          String               @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        WorkspaceMemberRole  @default(MEMBER)
+  createdAt   DateTime             @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@map("workspace_members")
+}
+
+model Invite {
+  id          String               @id @default(cuid())
+  workspaceId String
+  email       String
+  role        WorkspaceMemberRole  @default(MEMBER)
+  token       String               @unique
+  expiresAt   DateTime
+  createdAt   DateTime             @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@map("invites")
+}
+
+// ============================================================================
+// Scan Models
+// ============================================================================
+
+enum ScanProfile {
+  QUICK    // Fast scan, limited depth
+  STANDARD // Normal scan
+  DEEP     // Comprehensive scan with all checks
+  RUNTIME
+}
+
+enum ScanStatus {
+  QUEUED
+  RUNNING
+  DONE
+  FAILED
+}
+
+model Scan {
+  id          String      @id @default(cuid())
+  workspaceId String
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  url     String
+  profile ScanProfile @default(STANDARD)
+  status  ScanStatus  @default(QUEUED)
+
+  // Results
+  overallScore      Int?   // 0-100
+  categoryScores    String? // JSON: {ga4: 85, gtm: 90, meta: 75, consent: 80, capi: 60}
+  executiveSummary  String? // Markdown text
+  findings          String? // JSON array of findings
+  eventsTimeline    String? // JSON array of events by page
+  payloads          String? // JSON of all payloads captured
+  raw               String? // Full raw data
+
+  errorMessage String? // If status = FAILED
+
+  // Optional metadata
+  tags String? // JSON array: ["client:acme", "prod"]
+
+  workspace  Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  shareLinks ShareLink[]
+
+  @@index([workspaceId, createdAt])
+  @@map("scans")
+}
+
+// ============================================================================
+// Share Links
+// ============================================================================
+
+model ShareLink {
+  id          String   @id @default(cuid())
+  scanId      String
+  workspaceId String
+  slug        String   @unique // public ID
+  passwordHash String? // bcrypt hash if password protected
+  revokedAt   DateTime?
+  createdAt   DateTime @default(now())
+
+  scan      Scan      @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@map("share_links")
+}
+
+// ============================================================================
+// Usage Tracking
+// ============================================================================
+
+model Usage {
+  id          String @id @default(cuid())
+  workspaceId String
+  month       String // YYYY-MM format
+
+  scansCount     Int @default(0)
+  deepScansCount Int @default(0)
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, month])
+  @@map("usage")
+}
+
+// ============================================================================
+// Audit Logs
+// ============================================================================
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  workspaceId String
+  actorUserId String? // null for system actions
+  action      String   // e.g., "scan.created", "user.invited", "plan.upgraded"
+  metadata    String?  // JSON with additional context
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  actor     User?     @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, createdAt])
+  @@map("audit_logs")
+}
