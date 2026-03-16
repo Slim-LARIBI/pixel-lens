@@ -6,6 +6,17 @@ import { db } from "@/lib/db";
 
 export const runtime = "nodejs";
 
+type Status = "CONFIRMED" | "NOT_CONFIRMED" | "UNVERIFIED" | "PARTIAL";
+type Confidence = "HIGH" | "MEDIUM" | "LOW";
+
+type ValidationCheck = {
+  check: string;
+  status: Status;
+  confidence: Confidence;
+  evidence?: string;
+  action?: string;
+};
+
 type TimelineItem =
   | { ts: number; type: "request"; name: string; url: string; method: string }
   | { ts: number; type: "datalayer"; name: string; payload: any }
@@ -46,13 +57,56 @@ function hasAnyText(haystack: string, needles: string[]) {
   return needles.some((n) => s.includes(n.toLowerCase()));
 }
 
-/**
- * CMP auto-consent (best-effort)
- * - tries in main page + all frames (CMP often in iframe)
- */
+function inferPlatform(
+  url: string,
+  html: string,
+  requests: Array<{ url: string; method: string }>
+) {
+  const all = `${url}\n${html}\n${requests.map((r) => r.url).join("\n")}`.toLowerCase();
+
+  if (
+    all.includes("woocommerce") ||
+    all.includes("/wp-content/plugins/woocommerce") ||
+    all.includes("wc-ajax")
+  ) {
+    return "WooCommerce";
+  }
+
+  if (
+    all.includes("shopify") ||
+    all.includes("/cdn/shop/") ||
+    all.includes("shopify-payment-button")
+  ) {
+    return "Shopify";
+  }
+
+  if (all.includes("prestashop")) return "PrestaShop";
+  if (all.includes("magento")) return "Magento";
+
+  return "Unknown";
+}
+
+function inferPageType(url: string) {
+  const s = (url || "").toLowerCase();
+
+  if (
+    s.includes("/product/") ||
+    s.includes("/produit/") ||
+    s.includes("/shop/") ||
+    s.includes("/boutique/")
+  ) {
+    return "Product";
+  }
+
+  if (s.includes("/cart") || s.includes("/panier")) return "Cart";
+  if (s.includes("/checkout") || s.includes("/commande")) return "Checkout";
+  if (s.includes("/category") || s.includes("/categorie")) return "Category";
+
+  return "Unknown";
+}
+
 async function tryAutoConsent(page: any, timeline: TimelineItem[]) {
   const candidates = [
-    // Generic text buttons (FR/EN)
     'button:has-text("Accept")',
     'button:has-text("Accept all")',
     'button:has-text("I agree")',
@@ -66,8 +120,6 @@ async function tryAutoConsent(page: any, timeline: TimelineItem[]) {
     'button:has-text("J\\x27accepte")',
     'button:has-text("Autoriser")',
     'button:has-text("D\\x27accord")',
-
-    // Common CMP selectors
     "#onetrust-accept-btn-handler",
     "button#onetrust-accept-btn-handler",
     "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll",
@@ -96,98 +148,130 @@ async function tryAutoConsent(page: any, timeline: TimelineItem[]) {
           await page.waitForTimeout(1500);
           return { clicked: true, selector: sel, where: ctxName };
         }
-      } catch {
-        // continue
-      }
+      } catch {}
     }
     return { clicked: false as const };
   };
 
-  // 1) try main page
   const mainTry = await tryInContext(page, "main");
   if (mainTry.clicked) return mainTry;
 
-  // 2) try all frames (CMP often embedded)
   const frames = page.frames();
   for (let i = 0; i < frames.length; i++) {
     const f = frames[i];
     try {
       const r = await tryInContext(f, `frame:${i}`);
       if ((r as any).clicked) return r as any;
-    } catch {
-      // ignore
-    }
+    } catch {}
   }
 
-  timeline.push({ ts: now(), type: "note", name: "consent.click", payload: { clicked: false } });
+  timeline.push({
+    ts: now(),
+    type: "note",
+    name: "consent.click",
+    payload: { clicked: false },
+  });
+
   return { clicked: false };
 }
 
-/**
- * Try to navigate to a product-like page for view_item validation
- */
-async function tryViewItemJourney(page: any, baseOrigin: string, timeline: TimelineItem[]) {
-  const productKeywords = [
-    "product",
-    "produit",
-    "shop",
-    "boutique",
-    "store",
-    "item",
-    "sku",
-    "catalog",
-    "categorie",
-    "category",
-    "panier",
-    "cart",
+async function tryAddToCart(page: any, timeline: TimelineItem[]) {
+  const selectors = [
+    'button[name="add-to-cart"]',
+    '[name="add-to-cart"]',
+    ".single_add_to_cart_button",
+    ".add_to_cart_button",
+    '[data-add-to-cart]',
+    'button:has-text("Add to cart")',
+    'button:has-text("Ajouter au panier")',
+    'button:has-text("Ajouter")',
   ];
 
-  const links: string[] = await page.evaluate((origin: string) => {
-    const out: string[] = [];
-    const as = Array.from(document.querySelectorAll("a[href]")) as HTMLAnchorElement[];
-    for (const a of as) {
+  for (const sel of selectors) {
+    try {
+      const btn = page.locator(sel).first();
+
+      if ((await btn.count()) > 0 && (await btn.isVisible({ timeout: 1000 }))) {
+        await btn.click({ timeout: 2000 });
+
+        timeline.push({
+          ts: now(),
+          type: "note",
+          name: "add_to_cart.click",
+          payload: { selector: sel },
+        });
+
+        await page.waitForTimeout(2500);
+        return { attempted: true, clicked: true, selector: sel };
+      }
+    } catch {}
+  }
+
+  timeline.push({
+    ts: now(),
+    type: "note",
+    name: "add_to_cart.not_found",
+    payload: {},
+  });
+
+  return { attempted: true, clicked: false, selector: null as string | null };
+}
+
+async function collectInternalCandidates(page: any, baseOrigin: string) {
+  return await page.evaluate((origin: string) => {
+    const anchors = Array.from(document.querySelectorAll("a[href]")) as HTMLAnchorElement[];
+
+    const out = {
+      categoryPages: [] as string[],
+      productPages: [] as string[],
+      otherPages: [] as string[],
+    };
+
+    for (const a of anchors) {
       const href = a.getAttribute("href") || "";
       if (!href) continue;
       if (href.startsWith("#")) continue;
       if (href.startsWith("mailto:") || href.startsWith("tel:")) continue;
 
-      let abs = href;
+      let abs = "";
       try {
         abs = new URL(href, origin).toString();
       } catch {
         continue;
       }
+
       if (!abs.startsWith(origin)) continue;
       if (abs.includes("/wp-admin") || abs.includes("/wp-login")) continue;
-      out.push(abs);
+
+      const u = abs.toLowerCase();
+
+      if (
+        u.includes("/category/") ||
+        u.includes("/categorie/") ||
+        u.includes("/shop/") ||
+        u.includes("/boutique/")
+      ) {
+        out.categoryPages.push(abs);
+        continue;
+      }
+
+      if (u.includes("/product/") || u.includes("/produit/")) {
+        out.productPages.push(abs);
+        continue;
+      }
+
+      out.otherPages.push(abs);
     }
-    return Array.from(new Set(out)).slice(0, 120);
+
+    return {
+      categoryPages: Array.from(new Set(out.categoryPages)).slice(0, 3),
+      productPages: Array.from(new Set(out.productPages)).slice(0, 10),
+      otherPages: Array.from(new Set(out.otherPages)).slice(0, 20),
+    };
   }, baseOrigin);
-
-  let target =
-    links.find((u) => productKeywords.some((k) => u.toLowerCase().includes(k))) ||
-    links.find((u) => u.startsWith(baseOrigin) && !u.includes("#")) ||
-    null;
-
-  if (!target) {
-    timeline.push({ ts: now(), type: "note", name: "view_item.skip", payload: { reason: "no_internal_links" } });
-    return { attempted: false, target: null as string | null, failed: false };
-  }
-
-  timeline.push({ ts: now(), type: "note", name: "view_item.target", payload: { target } });
-
-  try {
-    await page.goto(target, { waitUntil: "networkidle", timeout: 45000 });
-    await page.waitForTimeout(1200);
-    return { attempted: true, target, failed: false };
-  } catch (e: any) {
-    timeline.push({ ts: now(), type: "note", name: "view_item.fail", payload: { message: e?.message || String(e) } });
-    return { attempted: true, target, failed: true };
-  }
 }
 
 async function runRuntimeScan(url: string) {
-  // Dynamic import to avoid bundler/edge issues
   const { chromium } = await import("playwright");
 
   const pagesVisited: string[] = [];
@@ -212,6 +296,17 @@ async function runRuntimeScan(url: string) {
       ga4: false,
       datalayer: false,
       meta: false,
+      testedPages: [] as string[],
+      confirmedPages: [] as string[],
+    },
+    add_to_cart: {
+      attempted: false,
+      clicked: false,
+      ga4: false,
+      datalayer: false,
+      meta: false,
+      testedPages: [] as string[],
+      confirmedPages: [] as string[],
     },
   };
 
@@ -223,6 +318,17 @@ async function runRuntimeScan(url: string) {
       hasGa4InHtml: false,
       hasMetaInHtml: false,
     },
+    v2: {
+      categoryPagesTested: [] as string[],
+      productPagesTested: [] as string[],
+    },
+    report: {
+      platform: "Unknown",
+      pageType: "Unknown",
+      confidence: "LOW" as Confidence,
+      insights: [] as string[],
+      checks: [] as ValidationCheck[],
+    },
   };
 
   const ga4Ids = new Set<string>();
@@ -231,11 +337,6 @@ async function runRuntimeScan(url: string) {
   const dlEventNames = new Set<string>();
   const fbqEvents = new Set<string>();
   const gtagEvents = new Set<string>();
-
-  function detectGa4Event(reqUrl: string) {
-    const en = getParam(reqUrl, "en");
-    return en || null;
-  }
 
   const browser = await chromium.launch({
     headless: true,
@@ -254,33 +355,30 @@ async function runRuntimeScan(url: string) {
     const method = String(r.method());
     raw.requests.push({ url: reqUrl, method });
 
-    // GTM (standard)
     if (reqUrl.includes("googletagmanager.com/gtm.js")) {
       const id = getParam(reqUrl, "id");
       if (id) gtmIds.add(id);
       timeline.push({ ts: now(), type: "request", name: "gtm.js", url: reqUrl, method });
     }
 
-    // gtag.js
     if (reqUrl.includes("googletagmanager.com/gtag/js")) {
       const id = getParam(reqUrl, "id");
       if (id) ga4Ids.add(id);
       timeline.push({ ts: now(), type: "request", name: "gtag.js", url: reqUrl, method });
     }
 
-    // GA4 collect (standard domain)
     if (reqUrl.includes("google-analytics.com/g/collect") || reqUrl.includes("google-analytics.com/g/")) {
       signals.ga4Requests += 1;
       const tid = getParam(reqUrl, "tid");
       if (tid) ga4Ids.add(tid);
 
-      const ev = detectGa4Event(reqUrl);
+      const ev = getParam(reqUrl, "en");
       if (ev === "view_item") validation.view_item.ga4 = true;
+      if (ev === "add_to_cart") validation.add_to_cart.ga4 = true;
 
       timeline.push({ ts: now(), type: "request", name: "ga4.collect", url: reqUrl, method });
     }
 
-    // Meta pixel endpoint
     if (reqUrl.includes("facebook.com/tr")) {
       signals.metaPixel = true;
       const pid = getParam(reqUrl, "id") || getParam(reqUrl, "pid");
@@ -290,12 +388,12 @@ async function runRuntimeScan(url: string) {
       if (ev) {
         fbqEvents.add(ev);
         if (ev === "ViewContent") validation.view_item.meta = true;
+        if (ev === "AddToCart") validation.add_to_cart.meta = true;
       }
 
       timeline.push({ ts: now(), type: "request", name: "meta.tr", url: reqUrl, method });
     }
 
-    // Consent hints
     if (hasAnyText(reqUrl, ["consent", "cmp", "onetrust", "cookiebot", "quantcast", "axeptio", "didomi"])) {
       signals.consentSeen = true;
     }
@@ -308,8 +406,8 @@ async function runRuntimeScan(url: string) {
     // @ts-ignore
     window.dataLayer = window.dataLayer || [];
     const dl = window.dataLayer;
-
     const originalPush = dl.push.bind(dl);
+
     dl.push = function (...args: any[]) {
       try {
         // @ts-ignore
@@ -344,21 +442,18 @@ async function runRuntimeScan(url: string) {
   });
 
   try {
-    // 1) Load homepage
+    // 1) Homepage
     await page.goto(url, { waitUntil: "networkidle", timeout: 45000 });
     pagesVisited.push(page.url());
     raw.finalUrl = page.url();
 
-    // Small interaction to trigger some tags
     await page.waitForTimeout(800);
     await page.mouse.wheel(0, 1200);
-    await page.waitForTimeout(800);
+    await page.waitForTimeout(1200);
 
-    // 2) Auto-consent (best effort)
     const consent = await tryAutoConsent(page, timeline);
     if ((consent as any).clicked) signals.consentSeen = true;
 
-    // 3) Backup detect IDs from HTML
     const html = await page.content();
     const htmlGtm = uniq(html.match(/GTM-[A-Z0-9]+/g) || []);
     const htmlGa4 = uniq(html.match(/G-[A-Z0-9]{8,}/g) || []);
@@ -376,14 +471,116 @@ async function runRuntimeScan(url: string) {
     raw.htmlSnippets.hasGa4InHtml = htmlGa4.length > 0;
     raw.htmlSnippets.hasMetaInHtml = !!mpMatch?.[1];
 
-    // 4) Try "view_item" journey
     const baseOrigin = new URL(url).origin;
-    const vi = await tryViewItemJourney(page, baseOrigin, timeline);
-    validation.view_item.attempted = !!vi.attempted;
-    validation.view_item.target = vi.target || null;
-    if (vi.attempted && !vi.failed) pagesVisited.push(page.url());
+    const candidates = await collectInternalCandidates(page, baseOrigin);
 
-    // 5) Extract captured runtime hooks (dataLayer/gtag/fbq)
+    timeline.push({
+      ts: now(),
+      type: "note",
+      name: "internal_pages_detected",
+      payload: {
+        category: candidates.categoryPages.length,
+        products: candidates.productPages.length,
+        other: candidates.otherPages.length,
+      },
+    });
+
+    // 2) Optional category page
+    if (candidates.categoryPages.length > 0) {
+      const categoryUrl = candidates.categoryPages[0];
+
+      try {
+        await page.goto(categoryUrl, { waitUntil: "networkidle", timeout: 45000 });
+        await page.waitForTimeout(1200);
+
+        pagesVisited.push(page.url());
+        raw.v2.categoryPagesTested.push(page.url());
+
+        timeline.push({
+          ts: now(),
+          type: "note",
+          name: "category_page_tested",
+          payload: { url: page.url() },
+        });
+      } catch (e: any) {
+        timeline.push({
+          ts: now(),
+          type: "note",
+          name: "category_page_failed",
+          payload: { url: categoryUrl, message: e?.message || String(e) },
+        });
+      }
+    }
+
+    // 3) Up to 3 product pages
+    const productTargets =
+      candidates.productPages.length > 0
+        ? candidates.productPages.slice(0, 3)
+        : candidates.otherPages.slice(0, 3);
+
+    for (const productUrl of productTargets) {
+      try {
+        await page.goto(productUrl, { waitUntil: "networkidle", timeout: 45000 });
+        await page.waitForTimeout(1500);
+
+        const currentUrl = page.url();
+
+        pagesVisited.push(currentUrl);
+        raw.v2.productPagesTested.push(currentUrl);
+        validation.view_item.testedPages.push(currentUrl);
+        validation.add_to_cart.testedPages.push(currentUrl);
+
+        timeline.push({
+          ts: now(),
+          type: "note",
+          name: "product_page_tested",
+          payload: { url: currentUrl },
+        });
+
+        const beforeViewGa4 = validation.view_item.ga4;
+        const beforeViewDl = validation.view_item.datalayer;
+        const beforeAtcGa4 = validation.add_to_cart.ga4;
+        const beforeAtcDl = validation.add_to_cart.datalayer;
+
+        // Give page some time to fire view_item
+        await page.waitForTimeout(1500);
+
+        if (validation.view_item.ga4 || validation.view_item.datalayer) {
+          validation.view_item.attempted = true;
+          validation.view_item.target = currentUrl;
+          if (!validation.view_item.confirmedPages.includes(currentUrl)) {
+            validation.view_item.confirmedPages.push(currentUrl);
+          }
+        } else if (!beforeViewGa4 && !beforeViewDl) {
+          validation.view_item.attempted = true;
+          validation.view_item.target = currentUrl;
+        }
+
+        const addToCart = await tryAddToCart(page, timeline);
+        validation.add_to_cart.attempted = true;
+        if (addToCart.clicked) {
+          validation.add_to_cart.clicked = true;
+        }
+
+        await page.waitForTimeout(1500);
+
+        if (validation.add_to_cart.ga4 || validation.add_to_cart.datalayer) {
+          if (!validation.add_to_cart.confirmedPages.includes(currentUrl)) {
+            validation.add_to_cart.confirmedPages.push(currentUrl);
+          }
+        } else if (!beforeAtcGa4 && !beforeAtcDl) {
+          // keep attempted without confirmation
+        }
+      } catch (e: any) {
+        timeline.push({
+          ts: now(),
+          type: "note",
+          name: "product_page_failed",
+          payload: { url: productUrl, message: e?.message || String(e) },
+        });
+      }
+    }
+
     const hooks = await page.evaluate(() => {
       // @ts-ignore
       const p = (window as any).__PIXELLENS__ || {};
@@ -396,40 +593,72 @@ async function runRuntimeScan(url: string) {
 
     for (const entry of hooks.dl as any[]) {
       const first = entry?.[0];
+
       if (first && typeof first === "object") {
         const ev = first.event ? String(first.event) : "dataLayer.push";
         dlEventNames.add(ev);
 
-        timeline.push({ ts: now(), type: "datalayer", name: ev, payload: safeJson(first) });
+        timeline.push({
+          ts: now(),
+          type: "datalayer",
+          name: ev,
+          payload: safeJson(first),
+        });
 
-        if (String(first.event || "").toLowerCase() === "view_item") {
+        const evLower = String(first.event || "").toLowerCase();
+
+        if (evLower === "view_item") {
           validation.view_item.datalayer = true;
+        }
+
+        if (evLower === "add_to_cart") {
+          validation.add_to_cart.datalayer = true;
         }
       } else {
         dlEventNames.add("dataLayer.push");
-        timeline.push({ ts: now(), type: "datalayer", name: "dataLayer.push", payload: safeJson(entry) });
+        timeline.push({
+          ts: now(),
+          type: "datalayer",
+          name: "dataLayer.push",
+          payload: safeJson(entry),
+        });
       }
     }
 
     for (const args of hooks.gtag as any[]) {
       const t0 = String(args?.[0] || "");
       const t1 = String(args?.[1] || "");
+
       if (t0 === "event" && t1) {
         gtagEvents.add(t1);
-        if (t1 === "view_item") validation.view_item.ga4 = true;
+
+        if (t1 === "view_item") {
+          validation.view_item.ga4 = true;
+        }
+
+        if (t1 === "add_to_cart") {
+          validation.add_to_cart.ga4 = true;
+        }
       }
     }
 
     for (const args of hooks.fbq as any[]) {
       const t0 = String(args?.[0] || "");
       const t1 = String(args?.[1] || "");
+
       if ((t0 === "track" || t0 === "trackCustom") && t1) {
         fbqEvents.add(t1);
-        if (t1 === "ViewContent") validation.view_item.meta = true;
+
+        if (t1 === "ViewContent") {
+          validation.view_item.meta = true;
+        }
+
+        if (t1 === "AddToCart") {
+          validation.add_to_cart.meta = true;
+        }
       }
     }
 
-    // 6) Finalize signals
     signals.gtmIds = Array.from(gtmIds);
     signals.ga4MeasurementIds = Array.from(ga4Ids);
     signals.metaPixelIds = Array.from(metaIds);
@@ -447,10 +676,34 @@ async function runRuntimeScan(url: string) {
         ga4: validation.view_item.ga4,
         datalayer: validation.view_item.datalayer,
         meta: validation.view_item.meta,
+        testedPages: validation.view_item.testedPages,
+        confirmedPages: validation.view_item.confirmedPages,
         note:
-          "GA4 view_item detected via en=view_item OR gtag('event','view_item') OR dataLayer event='view_item'. Meta mapped to ViewContent best-effort.",
+          "V2 multi-page: view_item checked across product pages.",
       },
     });
+
+    timeline.push({
+      ts: now(),
+      type: "validation",
+      name: "add_to_cart",
+      payload: {
+        attempted: validation.add_to_cart.attempted,
+        clicked: validation.add_to_cart.clicked,
+        ga4: validation.add_to_cart.ga4,
+        datalayer: validation.add_to_cart.datalayer,
+        meta: validation.add_to_cart.meta,
+        testedPages: validation.add_to_cart.testedPages,
+        confirmedPages: validation.add_to_cart.confirmedPages,
+        note:
+          "V2 multi-page: add_to_cart checked across product pages.",
+      },
+    });
+
+    raw.report.platform = inferPlatform(url, html, raw.requests);
+    raw.report.pageType = inferPageType(
+      validation.view_item.target || raw.finalUrl
+    );
 
     return { pagesVisited, signals, validation, timeline, raw };
   } finally {
@@ -461,106 +714,188 @@ async function runRuntimeScan(url: string) {
 }
 
 function buildRuntimeReport(result: Awaited<ReturnType<typeof runRuntimeScan>>) {
-  const { signals, validation } = result;
+  const { signals, validation, raw } = result;
 
-  // Scoring v1
+  const validations: ValidationCheck[] = [];
+
+  validations.push({
+    check: "GTM",
+    status: signals.gtmIds.length ? "CONFIRMED" : "NOT_CONFIRMED",
+    confidence: signals.gtmIds.length ? "HIGH" : "LOW",
+    evidence: signals.gtmIds.length
+      ? `Container(s): ${signals.gtmIds.join(", ")}`
+      : "No GTM script detected",
+    action: signals.gtmIds.length ? "None" : "Install Google Tag Manager container on all pages",
+  });
+
+  validations.push({
+    check: "GA4",
+    status:
+      signals.ga4Requests > 0 || signals.ga4MeasurementIds.length
+        ? "CONFIRMED"
+        : "NOT_CONFIRMED",
+    confidence:
+      signals.ga4Requests > 0 ? "HIGH" : signals.ga4MeasurementIds.length ? "MEDIUM" : "LOW",
+    evidence: signals.ga4MeasurementIds.length
+      ? `Measurement IDs: ${signals.ga4MeasurementIds.join(", ")}`
+      : "No GA4 requests observed",
+    action:
+      signals.ga4Requests > 0 || signals.ga4MeasurementIds.length
+        ? "None"
+        : "Verify GA4 configuration and GTM triggers",
+  });
+
+  validations.push({
+    check: "Meta Pixel",
+    status: signals.metaPixel ? "CONFIRMED" : "NOT_CONFIRMED",
+    confidence: signals.metaPixel ? "HIGH" : "LOW",
+    evidence: signals.metaPixelIds.length
+      ? `Pixel IDs: ${signals.metaPixelIds.join(", ")}`
+      : "facebook.com/tr endpoint not detected",
+    action: signals.metaPixel ? "None" : "Install Meta Pixel or verify tracking setup",
+  });
+
+  validations.push({
+    check: "Consent",
+    status: signals.consentSeen ? "CONFIRMED" : "UNVERIFIED",
+    confidence: signals.consentSeen ? "HIGH" : "LOW",
+    evidence: signals.consentSeen
+      ? "CMP or consent signal detected"
+      : "No CMP interaction detected",
+    action: signals.consentSeen ? "Review consent behavior" : "Implement CMP and configure GTM consent mode",
+  });
+
+  const viewItemConfirmedCount = validation.view_item.confirmedPages.length;
+  const viewItemTestedCount = validation.view_item.testedPages.length;
+
+  validations.push({
+    check: "view_item",
+    status:
+      viewItemConfirmedCount >= 2
+        ? "CONFIRMED"
+        : viewItemConfirmedCount === 1
+        ? "PARTIAL"
+        : validation.view_item.attempted
+        ? "NOT_CONFIRMED"
+        : "UNVERIFIED",
+    confidence:
+      viewItemConfirmedCount >= 2
+        ? "HIGH"
+        : viewItemConfirmedCount === 1
+        ? "MEDIUM"
+        : validation.view_item.attempted
+        ? "LOW"
+        : "LOW",
+    evidence:
+      viewItemTestedCount > 0
+        ? `Confirmed on ${viewItemConfirmedCount}/${viewItemTestedCount} product page(s)`
+        : "No product page tested",
+    action:
+      viewItemConfirmedCount >= 2
+        ? "None"
+        : "Review product page ecommerce mapping",
+  });
+
+  const addToCartConfirmedCount = validation.add_to_cart.confirmedPages.length;
+  const addToCartTestedCount = validation.add_to_cart.testedPages.length;
+
+  validations.push({
+    check: "add_to_cart",
+    status:
+      addToCartConfirmedCount >= 2
+        ? "CONFIRMED"
+        : addToCartConfirmedCount === 1
+        ? "PARTIAL"
+        : validation.add_to_cart.attempted
+        ? "NOT_CONFIRMED"
+        : "UNVERIFIED",
+    confidence:
+      addToCartConfirmedCount >= 2
+        ? "HIGH"
+        : addToCartConfirmedCount === 1
+        ? "MEDIUM"
+        : validation.add_to_cart.attempted
+        ? "LOW"
+        : "LOW",
+    evidence:
+      addToCartTestedCount > 0
+        ? `Confirmed on ${addToCartConfirmedCount}/${addToCartTestedCount} product page(s)`
+        : "No add_to_cart interaction tested",
+    action:
+      addToCartConfirmedCount >= 2
+        ? "None"
+        : "Validate add_to_cart trigger and ecommerce payload",
+  });
+
+  validations.push({
+    check: "Checkout",
+    status: "UNVERIFIED",
+    confidence: "LOW",
+    evidence: "Checkout flow not simulated yet in V2 step 1",
+    action: "Add checkout simulation in next step",
+  });
+
+  validations.push({
+    check: "CAPI",
+    status: "UNVERIFIED",
+    confidence: "LOW",
+    evidence: "Browser scan cannot fully verify server-side signals",
+    action: "Validate Meta CAPI server-side outside browser-only scan",
+  });
+
   let score = 0;
-  score += signals.gtmIds.length ? 30 : 0;
-  score += signals.ga4Requests > 0 || signals.ga4MeasurementIds.length ? 35 : 0;
-  score += signals.metaPixel ? 20 : 0;
-  score += signals.consentSeen ? 15 : 0;
-  score += validation.view_item.ga4 || validation.view_item.datalayer ? 10 : 0; // bonus validation
+  if (signals.gtmIds.length) score += 20;
+  if (signals.ga4Requests > 0 || signals.ga4MeasurementIds.length) score += 20;
+  if (signals.metaPixel) score += 10;
+  if (signals.consentSeen) score += 10;
+  if (viewItemConfirmedCount >= 2) score += 20;
+  else if (viewItemConfirmedCount === 1) score += 10;
+  if (addToCartConfirmedCount >= 2) score += 20;
+  else if (addToCartConfirmedCount === 1) score += 10;
   score = scoreClamp(score);
 
   const categoryScores = {
-    gtm: signals.gtmIds.length ? 100 : 35,
-    ga4: signals.ga4Requests > 0 || signals.ga4MeasurementIds.length ? 80 : 30,
+    gtm: signals.gtmIds.length ? 100 : 30,
+    ga4: signals.ga4Requests > 0 || signals.ga4MeasurementIds.length ? 85 : 30,
     meta: signals.metaPixel ? 80 : 0,
+    consent: signals.consentSeen ? 70 : 0,
     capi: 0,
   };
 
-  const findings: any[] = [];
-
-  if (!signals.gtmIds.length) {
-    findings.push({
-      severity: "HIGH",
-      title: "GTM not detected",
-      impact: "Tag management + ecommerce instrumentation harder to scale",
-      fix: "Install Google Tag Manager snippet (head + body) on all pages.",
-    });
-  } else {
-    findings.push({
-      severity: "INFO",
-      title: "GTM detected",
-      impact: "Tag management enabled",
-      fix: `Detected GTM container(s): ${signals.gtmIds.join(", ")}`,
-    });
-  }
-
-  if (!(signals.ga4Requests > 0 || signals.ga4MeasurementIds.length)) {
-    findings.push({
-      severity: "HIGH",
-      title: "No GA4 hits detected at runtime",
-      impact: "No page_view/events observed during headless journey",
-      fix: "Verify GA4 tag firing in GTM + check consent mode + test without bot protections.",
-    });
-  } else {
-    findings.push({
-      severity: "INFO",
-      title: "GA4 detected",
-      impact: "GA4 network calls observed",
-      fix: `Measurement IDs: ${signals.ga4MeasurementIds.join(", ") || "detected via requests"}`,
-    });
-  }
-
-  if (!signals.metaPixel) {
-    findings.push({
-      severity: "MEDIUM",
-      title: "Meta Pixel not detected",
-      impact: "No Meta remarketing/conversion signals observed",
-      fix: "Install Meta Pixel (and ideally CAPI) and validate PageView/ViewContent.",
-    });
-  } else {
-    findings.push({
-      severity: "INFO",
-      title: "Meta Pixel detected",
-      impact: "Meta tracking observed",
-      fix: signals.metaPixelIds.length ? `Pixel IDs: ${signals.metaPixelIds.join(", ")}` : "facebook.com/tr observed",
-    });
-  }
-
-  if (!signals.consentSeen) {
-    findings.push({
-      severity: "MEDIUM",
-      title: "Consent/CMP not detected",
-      impact: "Possible compliance + tags might fire before consent",
-      fix: "Implement CMP + align GTM consent mode.",
-    });
-  }
-
-  if (!validation.view_item.ga4 && !validation.view_item.datalayer) {
-    findings.push({
-      severity: "HIGH",
-      title: "view_item validation",
-      impact: "No view_item detected during product-like navigation",
-      fix: "Implement ecommerce view_item (dataLayer/gtag) and verify parameters.",
-    });
-  }
+  const insights = [
+    validations.find((v) => v.check === "GTM")?.status === "CONFIRMED" &&
+    validations.find((v) => v.check === "GA4")?.status === "CONFIRMED"
+      ? "GTM and GA4 are confirmed."
+      : "Tracking stack is only partially confirmed.",
+    `view_item confirmed on ${viewItemConfirmedCount}/${viewItemTestedCount} product page(s).`,
+    `add_to_cart confirmed on ${addToCartConfirmedCount}/${addToCartTestedCount} product page(s).`,
+    `PixelLens V2 tested ${raw.v2.productPagesTested.length} product page(s).`,
+  ];
 
   const executiveSummary =
-    `**Phase 2 Runtime Scan (Playwright)**\n\n` +
-    `Detected:\n` +
-    `- GA4 IDs: ${signals.ga4MeasurementIds.join(", ") || "none"}\n` +
-    `- GTM IDs: ${signals.gtmIds.join(", ") || "none"}\n` +
-    `- Meta Pixel: ${signals.metaPixel ? "yes" : "no"}\n` +
-    `- Consent: ${signals.consentSeen ? "detected" : "not detected"}\n\n` +
-    `view_item:\n` +
-    `- attempted: ${validation.view_item.attempted ? "yes" : "no"}\n` +
-    `- GA4: ${validation.view_item.ga4 ? "yes" : "no"}\n` +
-    `- dataLayer: ${validation.view_item.datalayer ? "yes" : "no"}\n\n` +
-    `**Next**: auto-consent improvements + add_to_cart/purchase validations.`;
+    `PixelLens Runtime Audit V2\n\n` +
+    `Platform: ${raw.report.platform}\n` +
+    `Page type: ${raw.report.pageType}\n` +
+    `Category pages tested: ${raw.v2.categoryPagesTested.length}\n` +
+    `Product pages tested: ${raw.v2.productPagesTested.length}\n\n` +
+    `GTM: ${signals.gtmIds.length ? "confirmed" : "not confirmed"}\n` +
+    `GA4: ${signals.ga4Requests > 0 || signals.ga4MeasurementIds.length ? "confirmed" : "not confirmed"}\n` +
+    `Meta Pixel: ${signals.metaPixel ? "confirmed" : "not confirmed"}\n` +
+    `Consent: ${signals.consentSeen ? "detected" : "unverified"}\n\n` +
+    `view_item: confirmed on ${viewItemConfirmedCount}/${viewItemTestedCount} product page(s)\n` +
+    `add_to_cart: confirmed on ${addToCartConfirmedCount}/${addToCartTestedCount} product page(s)\n`;
 
-  return { overallScore: score, categoryScores, executiveSummary, findings };
+  raw.report.confidence = score >= 75 ? "HIGH" : score >= 45 ? "MEDIUM" : "LOW";
+  raw.report.insights = insights;
+  raw.report.checks = validations;
+
+  return {
+    overallScore: score,
+    categoryScores,
+    validations,
+    executiveSummary,
+    raw,
+  };
 }
 
 export async function POST(req: Request) {
@@ -579,13 +914,16 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Invalid url. Must start with http(s)://" }, { status: 400 });
     }
 
-    // Resolve workspace safely (avoid FK crashes)
     let workspaceId = String(body?.workspaceId || "").trim();
     let workspace = null as null | { id: string };
 
     if (workspaceId) {
-      workspace = await db.workspace.findUnique({ where: { id: workspaceId }, select: { id: true } });
+      workspace = await db.workspace.findUnique({
+        where: { id: workspaceId },
+        select: { id: true },
+      });
     }
+
     if (!workspace) {
       const first = await db.workspace.findFirst({ select: { id: true } });
       if (first) {
@@ -593,32 +931,34 @@ export async function POST(req: Request) {
         workspaceId = first.id;
       }
     }
+
     if (!workspace) {
       const created = await db.workspace.create({
-        data: { name: "Dev Workspace", slug: `dev-workspace-${Date.now()}`, plan: "FREE" },
+        data: {
+          name: "Dev Workspace",
+          slug: `dev-workspace-${Date.now()}`,
+          plan: "FREE",
+        },
         select: { id: true },
       });
       workspace = created;
       workspaceId = created.id;
     }
 
-    // Create scan
     const scan = await db.scan.create({
       data: {
         workspaceId,
         url,
-        profile: "RUNTIME" as any,
+        profile: "QUICK" as any,
         status: "RUNNING" as any,
-        tags: JSON.stringify(["runtime:playwright"]),
+        tags: JSON.stringify(["runtime:playwright", "v2:5-pages"]),
       },
       select: { id: true },
     });
 
-    // Run scan
     const result = await runRuntimeScan(url);
     const report = buildRuntimeReport(result);
 
-    // Persist results
     await db.scan.update({
       where: { id: scan.id },
       data: {
@@ -626,16 +966,18 @@ export async function POST(req: Request) {
         overallScore: report.overallScore ?? 0,
         categoryScores: JSON.stringify(report.categoryScores ?? {}),
         executiveSummary: report.executiveSummary ?? "",
-        findings: JSON.stringify(report.findings ?? []),
+        findings: JSON.stringify(report.validations ?? []),
         eventsTimeline: JSON.stringify(result.timeline ?? []),
-        raw: JSON.stringify(result.raw ?? {}),
+        raw: JSON.stringify(report.raw ?? {}),
       },
     });
 
-    // Return scan id (IMPORTANT for UI)
     return NextResponse.json({ id: scan.id }, { status: 201 });
   } catch (err: any) {
     console.error("POST /api/scans/runtime error:", err);
-    return NextResponse.json({ error: err?.message || "Internal Server Error" }, { status: 500 });
+    return NextResponse.json(
+      { error: err?.message || "Internal Server Error" },
+      { status: 500 }
+    );
   }
 }

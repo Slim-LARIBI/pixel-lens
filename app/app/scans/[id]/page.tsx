@@ -1,6 +1,19 @@
 import { notFound } from "next/navigation";
+import ScanTabs from "@/components/scan-tabs";
+import ScanTimeline from "@/components/scan-timeline";
 import Link from "next/link";
 import { db } from "@/lib/db";
+
+type Status = "CONFIRMED" | "NOT_CONFIRMED" | "UNVERIFIED" | "PARTIAL";
+type Confidence = "HIGH" | "MEDIUM" | "LOW";
+
+type ValidationCheck = {
+  check: string;
+  status: Status;
+  confidence: Confidence;
+  evidence?: string;
+  action?: string;
+};
 
 function safeJsonParse<T>(value: string | null | undefined, fallback: T): T {
   if (!value) return fallback;
@@ -11,21 +24,136 @@ function safeJsonParse<T>(value: string | null | undefined, fallback: T): T {
   }
 }
 
-function Badge({ children }: { children: React.ReactNode }) {
+function Badge({
+  children,
+  className = "",
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
   return (
-    <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium">
+    <span
+      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${className}`}
+    >
       {children}
     </span>
+  );
+}
+
+function statusBadge(status: Status) {
+  if (status === "CONFIRMED") {
+    return (
+      <Badge className="border-green-200 bg-green-50 text-green-700">
+        Confirmed
+      </Badge>
+    );
+  }
+  if (status === "PARTIAL") {
+    return (
+      <Badge className="border-yellow-200 bg-yellow-50 text-yellow-700">
+        Partial
+      </Badge>
+    );
+  }
+  if (status === "NOT_CONFIRMED") {
+    return (
+      <Badge className="border-orange-200 bg-orange-50 text-orange-700">
+        Not confirmed
+      </Badge>
+    );
+  }
+  return (
+    <Badge className="border-slate-200 bg-slate-50 text-slate-700">
+      Unverified
+    </Badge>
+  );
+}
+
+function confidenceBadge(confidence: Confidence) {
+  if (confidence === "HIGH") {
+    return (
+      <Badge className="border-green-200 bg-green-50 text-green-700">
+        High
+      </Badge>
+    );
+  }
+  if (confidence === "MEDIUM") {
+    return (
+      <Badge className="border-yellow-200 bg-yellow-50 text-yellow-700">
+        Medium
+      </Badge>
+    );
+  }
+  return (
+    <Badge className="border-slate-200 bg-slate-50 text-slate-700">Low</Badge>
+  );
+}
+
+function scoreToConfidence(score: number): Confidence {
+  if (score >= 75) return "HIGH";
+  if (score >= 45) return "MEDIUM";
+  return "LOW";
+}
+
+function getCheckByName(checks: ValidationCheck[], name: string): ValidationCheck {
+  return (
+    checks.find((c) => c.check.toLowerCase() === name.toLowerCase()) || {
+      check: name,
+      status: "UNVERIFIED",
+      confidence: "LOW",
+      evidence: "No direct evidence",
+      action: "Review manually",
+    }
+  );
+}
+
+function getMainRisk(checks: ValidationCheck[]) {
+  const risky =
+    checks.find((c) => c.status === "NOT_CONFIRMED") ||
+    checks.find((c) => c.status === "PARTIAL") ||
+    checks.find((c) => c.status === "UNVERIFIED");
+
+  return risky?.check || "No major risk detected";
+}
+
+function ProgressBar({ value }: { value: number }) {
+  const width = Math.max(0, Math.min(100, value || 0));
+  return (
+    <div className="mt-3 h-2 w-full rounded-full bg-slate-100">
+      <div
+        className="h-2 rounded-full bg-slate-900 transition-all duration-500"
+        style={{ width: `${width}%` }}
+      />
+    </div>
+  );
+}
+
+function SectionTitle({
+  title,
+  subtitle,
+}: {
+  title: string;
+  subtitle?: string;
+}) {
+  return (
+    <div className="mb-4">
+      <div className="text-base font-semibold">{title}</div>
+      {subtitle ? (
+        <div className="mt-1 text-sm text-muted-foreground">{subtitle}</div>
+      ) : null}
+    </div>
   );
 }
 
 export default async function ScanDetailPage({
   params,
 }: {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }) {
+  const { id } = await params;
+
   const scan = await db.scan.findUnique({
-    where: { id: params.id },
+    where: { id },
     include: { workspace: true, shareLinks: true },
   });
 
@@ -38,164 +166,542 @@ export default async function ScanDetailPage({
     {}
   );
 
-  const findings = safeJsonParse<any[]>(scan.findings, []);
   const timeline = safeJsonParse<any[]>(scan.eventsTimeline, []);
+  const raw = safeJsonParse<any>(scan.raw, {});
+  const report = raw?.report ?? {};
+  const validations = safeJsonParse<ValidationCheck[]>(scan.findings, []);
 
-  const ga4 = categoryScores.ga4 ?? categoryScores.GA4 ?? 0;
+  const checks: ValidationCheck[] = Array.isArray(report?.checks)
+    ? report.checks
+    : validations;
+
+  const insights: string[] = Array.isArray(report?.insights)
+    ? report.insights
+    : [];
+
+  const platform = report?.platform || "Unknown";
+  const pageType = report?.pageType || "Unknown";
+  const confidence: Confidence =
+    report?.confidence || scoreToConfidence(overallScore);
+
   const gtm = categoryScores.gtm ?? categoryScores.GTM ?? 0;
+  const ga4 = categoryScores.ga4 ?? categoryScores.GA4 ?? 0;
   const meta = categoryScores.meta ?? categoryScores.Meta ?? 0;
+  const consent = categoryScores.consent ?? categoryScores.Consent ?? 0;
   const capi = categoryScores.capi ?? categoryScores.CAPI ?? 0;
 
+  const gtmCheck = getCheckByName(checks, "GTM");
+  const ga4Check = getCheckByName(checks, "GA4");
+  const metaCheck = getCheckByName(checks, "Meta Pixel");
+  const consentCheck = getCheckByName(checks, "Consent");
+  const viewItemCheck = getCheckByName(checks, "view_item");
+  const addToCartCheck = getCheckByName(checks, "add_to_cart");
+  const checkoutCheck = getCheckByName(checks, "Checkout");
+  const capiCheck = getCheckByName(checks, "CAPI");
+
+  const pagesTested =
+    (raw?.v2?.categoryPagesTested?.length || 0) +
+    (raw?.v2?.productPagesTested?.length || 0) +
+    1;
+
+  const mainRisk = getMainRisk(checks);
+
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-bold break-all">{scan.url}</h1>
-            <Badge>{scan.status}</Badge>
-            <Badge>{scan.profile}</Badge>
-          </div>
-          <p className="text-sm text-muted-foreground">
-            Workspace:{" "}
-            <span className="font-medium">{scan.workspace?.name ?? "Unknown"}</span>{" "}
-            · Created: {scan.createdAt.toLocaleString()}
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <Link
-            href="/app/scans"
-            className="rounded-md border px-3 py-2 text-sm hover:bg-muted"
-          >
-            Back
-          </Link>
-
-          <Link
-            href={`/app/shared/${scan.shareLinks?.[0]?.slug ?? "demo"}`}
-            className="rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground hover:opacity-90"
-          >
-            View Share Link
-          </Link>
-        </div>
-      </div>
-
-      <div className="grid gap-4 md:grid-cols-5">
-        <div className="rounded-xl border p-4">
-          <div className="text-sm text-muted-foreground">Overall</div>
-          <div className="mt-1 text-3xl font-bold">{overallScore}</div>
-          <div className="text-xs text-muted-foreground">/ 100</div>
-        </div>
-
-        <div className="rounded-xl border p-4">
-          <div className="text-sm text-muted-foreground">GA4</div>
-          <div className="mt-1 text-2xl font-semibold">{ga4}</div>
-          <div className="text-xs text-muted-foreground">/ 100</div>
-        </div>
-
-        <div className="rounded-xl border p-4">
-          <div className="text-sm text-muted-foreground">GTM</div>
-          <div className="mt-1 text-2xl font-semibold">{gtm}</div>
-          <div className="text-xs text-muted-foreground">/ 100</div>
-        </div>
-
-        <div className="rounded-xl border p-4">
-          <div className="text-sm text-muted-foreground">Meta</div>
-          <div className="mt-1 text-2xl font-semibold">{meta}</div>
-          <div className="text-xs text-muted-foreground">/ 100</div>
-        </div>
-
-        <div className="rounded-xl border p-4">
-          <div className="text-sm text-muted-foreground">CAPI</div>
-          <div className="mt-1 text-2xl font-semibold">{capi}</div>
-          <div className="text-xs text-muted-foreground">/ 100</div>
-        </div>
-      </div>
-
-      {scan.status !== "DONE" && (
-        <div className="rounded-xl border p-4">
-          <div className="font-medium">Scan status: {scan.status}</div>
-          <p className="text-sm text-muted-foreground">
-            Refresh in a few seconds if you just launched it.
-          </p>
-          {scan.errorMessage && (
-            <p className="mt-2 text-sm text-red-600">{scan.errorMessage}</p>
-          )}
-        </div>
-      )}
-
-      <div className="rounded-xl border p-4">
-        <div className="mb-2 font-semibold">Executive Summary</div>
-        <div className="whitespace-pre-wrap text-sm leading-6">
-          {scan.executiveSummary || "No summary yet."}
-        </div>
-      </div>
-
-      <div className="rounded-xl border p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <div className="font-semibold">Findings</div>
-          <Badge>{findings.length}</Badge>
-        </div>
-
-        {findings.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No findings yet.</p>
-        ) : (
+    <div className="mx-auto max-w-7xl space-y-8">
+      <div className="rounded-3xl border bg-gradient-to-b from-slate-50 to-white p-6">
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
           <div className="space-y-3">
-            {findings.map((f, idx) => (
-              <div key={idx} className="rounded-lg border p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="font-medium">
-                    {f.title ?? f.name ?? `Finding #${idx + 1}`}
-                  </div>
-                  <Badge>{(f.severity ?? "INFO").toString()}</Badge>
-                </div>
-                {f.description && (
-                  <p className="mt-1 text-sm text-muted-foreground">{f.description}</p>
-                )}
-                {f.fix && (
-                  <div className="mt-2 text-sm">
-                    <span className="font-medium">Fix:</span>{" "}
-                    <span className="text-muted-foreground">{f.fix}</span>
-                  </div>
-                )}
-                {f.code && (
-                  <pre className="mt-2 overflow-x-auto rounded-md bg-muted p-3 text-xs">
-                    {f.code}
-                  </pre>
-                )}
-              </div>
-            ))}
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge>{scan.status}</Badge>
+              <Badge>{scan.profile}</Badge>
+              <Badge>{platform}</Badge>
+              <Badge>{pageType}</Badge>
+            </div>
+
+            <div>
+              <h1 className="break-all text-3xl font-bold">{scan.url}</h1>
+              <p className="mt-2 text-sm text-muted-foreground">
+                Workspace{" "}
+                <span className="font-medium text-foreground">
+                  {scan.workspace?.name ?? "Unknown"}
+                </span>{" "}
+                · Created {scan.createdAt.toLocaleString()}
+              </p>
+            </div>
+
+            <div className="flex flex-wrap gap-2 pt-2">
+              <Link
+                href="/app/scans"
+                className="rounded-xl border px-4 py-2 text-sm hover:bg-muted"
+              >
+                Back to scans
+              </Link>
+
+              <Link
+                href={`/app/shared/${scan.shareLinks?.[0]?.slug ?? "demo"}`}
+                className="rounded-xl bg-slate-900 px-4 py-2 text-sm text-white hover:opacity-90"
+              >
+                View share link
+              </Link>
+            </div>
           </div>
-        )}
+
+          <div className="min-w-[220px] rounded-2xl border bg-white p-5 shadow-sm">
+            <div className="text-sm text-muted-foreground">Tracking Health Score</div>
+            <div className="mt-2 text-5xl font-bold">{overallScore}</div>
+            <div className="mt-1 text-sm text-muted-foreground">/ 100</div>
+            <ProgressBar value={overallScore} />
+            <div className="mt-3">{confidenceBadge(confidence)}</div>
+          </div>
+        </div>
       </div>
 
-      <div className="rounded-xl border p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <div className="font-semibold">Timeline</div>
-          <Badge>{timeline.length}</Badge>
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+        <div className="rounded-2xl border p-5">
+          <div className="text-sm text-muted-foreground">Tracking Health</div>
+          <div className="mt-2 text-3xl font-bold">{overallScore}</div>
+          <ProgressBar value={overallScore} />
         </div>
 
-        {timeline.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No timeline yet.</p>
-        ) : (
-          <div className="space-y-2">
-            {timeline.slice(0, 50).map((t, idx) => (
-              <div key={idx} className="flex flex-col gap-1 rounded-md border p-2">
-                <div className="text-sm font-medium">
-                  {t.event ?? t.name ?? `Event #${idx + 1}`}
+        <div className="rounded-2xl border p-5">
+          <div className="text-sm text-muted-foreground">Ecommerce</div>
+          <div className="mt-2 text-lg font-semibold">
+            {viewItemCheck.status === "CONFIRMED" || addToCartCheck.status === "CONFIRMED"
+              ? "Partially validated"
+              : "Needs review"}
+          </div>
+          <div className="mt-3">
+            {viewItemCheck.status === "CONFIRMED" || addToCartCheck.status === "CONFIRMED"
+              ? statusBadge("PARTIAL")
+              : statusBadge("NOT_CONFIRMED")}
+          </div>
+        </div>
+
+        <div className="rounded-2xl border p-5">
+          <div className="text-sm text-muted-foreground">Confidence</div>
+          <div className="mt-2 text-lg font-semibold">{confidence}</div>
+          <div className="mt-3">{confidenceBadge(confidence)}</div>
+        </div>
+
+        <div className="rounded-2xl border p-5">
+          <div className="text-sm text-muted-foreground">Platform</div>
+          <div className="mt-2 text-lg font-semibold">{platform}</div>
+        </div>
+
+        <div className="rounded-2xl border p-5">
+          <div className="text-sm text-muted-foreground">Pages tested</div>
+          <div className="mt-2 text-lg font-semibold">{pagesTested}</div>
+        </div>
+
+        <div className="rounded-2xl border p-5">
+          <div className="text-sm text-muted-foreground">Main risk</div>
+          <div className="mt-2 text-lg font-semibold">{mainRisk}</div>
+        </div>
+      </div>
+
+      <ScanTabs
+        sections={{
+          Overview: (
+            <div className="space-y-8">
+              <div className="rounded-3xl border p-6">
+                <SectionTitle
+                  title="Channel Health"
+                  subtitle="Quick view of your tracking stack by channel."
+                />
+
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                  <div className="rounded-2xl border p-5">
+                    <div className="flex items-center justify-between">
+                      <div className="font-medium">GA4</div>
+                      {statusBadge(ga4Check.status)}
+                    </div>
+                    <div className="mt-3 text-3xl font-bold">{ga4}</div>
+                    <ProgressBar value={ga4} />
+                  </div>
+
+                  <div className="rounded-2xl border p-5">
+                    <div className="flex items-center justify-between">
+                      <div className="font-medium">GTM</div>
+                      {statusBadge(gtmCheck.status)}
+                    </div>
+                    <div className="mt-3 text-3xl font-bold">{gtm}</div>
+                    <ProgressBar value={gtm} />
+                  </div>
+
+                  <div className="rounded-2xl border p-5">
+                    <div className="flex items-center justify-between">
+                      <div className="font-medium">Meta Pixel</div>
+                      {statusBadge(metaCheck.status)}
+                    </div>
+                    <div className="mt-3 text-3xl font-bold">{meta}</div>
+                    <ProgressBar value={meta} />
+                  </div>
+
+                  <div className="rounded-2xl border p-5">
+                    <div className="flex items-center justify-between">
+                      <div className="font-medium">Consent</div>
+                      {statusBadge(consentCheck.status)}
+                    </div>
+                    <div className="mt-3 text-3xl font-bold">{consent}</div>
+                    <ProgressBar value={consent} />
+                  </div>
                 </div>
-                <div className="text-xs text-muted-foreground break-all">
-                  {t.page ?? t.url ?? ""}
-                </div>
-                {t.data && (
-                  <pre className="mt-1 overflow-x-auto rounded bg-muted p-2 text-xs">
-                    {JSON.stringify(t.data, null, 2)}
-                  </pre>
+              </div>
+
+              <div className="rounded-3xl border p-6">
+                <SectionTitle
+                  title="Top Insights"
+                  subtitle="The 3–4 most important things to understand first."
+                />
+
+                {insights.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No insights yet.</p>
+                ) : (
+                  <div className="grid gap-4 md:grid-cols-2">
+                    {insights.map((item, idx) => (
+                      <div key={idx} className="rounded-2xl border bg-slate-50 p-4">
+                        <div className="text-sm font-medium">{item}</div>
+                      </div>
+                    ))}
+                  </div>
                 )}
               </div>
-            ))}
-          </div>
-        )}
-      </div>
+
+              <div className="rounded-3xl border p-6">
+                <SectionTitle
+                  title="Validation Matrix"
+                  subtitle="Structured diagnostic checks with confidence, evidence and next action."
+                />
+
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                  {[viewItemCheck, addToCartCheck, checkoutCheck, consentCheck, capiCheck].map(
+                    (check, idx) => (
+                      <div key={idx} className="rounded-2xl border p-5">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="text-base font-semibold">{check.check}</div>
+                          {statusBadge(check.status)}
+                        </div>
+
+                        <div className="mt-3">{confidenceBadge(check.confidence)}</div>
+
+                        <div className="mt-4">
+                          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                            Evidence
+                          </div>
+                          <p className="mt-1 text-sm text-muted-foreground">
+                            {check.evidence || "No direct evidence"}
+                          </p>
+                        </div>
+
+                        <div className="mt-4">
+                          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                            Recommendation
+                          </div>
+                          <p className="mt-1 text-sm text-muted-foreground">
+                            {check.action || "Review manually"}
+                          </p>
+                        </div>
+                      </div>
+                    )
+                  )}
+                </div>
+              </div>
+
+              <div className="grid gap-6 xl:grid-cols-2">
+                <div className="rounded-3xl border p-6">
+                  <SectionTitle title="Executive Summary" />
+                  <div className="whitespace-pre-wrap text-sm leading-6 text-muted-foreground">
+                    {scan.executiveSummary || "No summary yet."}
+                  </div>
+                </div>
+
+                <div className="rounded-3xl border p-6">
+                  <SectionTitle title="Evidence" />
+
+                  <div className="grid gap-4">
+                    <div className="rounded-2xl border p-4">
+                      <div className="mb-2 font-medium">Detected IDs</div>
+                      <div className="space-y-2 text-sm text-muted-foreground">
+                        <div>
+                          <span className="font-medium text-foreground">GTM:</span>{" "}
+                          {gtmCheck.evidence || "None"}
+                        </div>
+                        <div>
+                          <span className="font-medium text-foreground">GA4:</span>{" "}
+                          {ga4Check.evidence || "None"}
+                        </div>
+                        <div>
+                          <span className="font-medium text-foreground">Meta:</span>{" "}
+                          {metaCheck.evidence || "None"}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border p-4">
+                      <div className="mb-2 font-medium">Runtime Signals</div>
+                      <div className="space-y-2 text-sm text-muted-foreground">
+                        <div>
+                          <span className="font-medium text-foreground">dataLayer:</span>{" "}
+                          {Array.isArray(timeline)
+                            ? timeline
+                                .filter((t) => t.type === "datalayer")
+                                .map((t) => t.name)
+                                .filter(Boolean)
+                                .slice(0, 20)
+                                .join(", ") || "None"
+                            : "None"}
+                        </div>
+                        <div>
+                          <span className="font-medium text-foreground">gtag:</span>{" "}
+                          {raw?.signals?.gtagEvents?.length
+                            ? raw.signals.gtagEvents.join(", ")
+                            : "None"}
+                        </div>
+                        <div>
+                          <span className="font-medium text-foreground">fbq:</span>{" "}
+                          {raw?.signals?.fbqEvents?.length
+                            ? raw.signals.fbqEvents.join(", ")
+                            : "None"}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-3xl border p-6">
+                <SectionTitle
+                  title="Audit Findings"
+                  subtitle="Each check rendered as a readable audit card."
+                />
+
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                  {checks.map((check, idx) => (
+                    <div key={idx} className="rounded-2xl border p-5">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="font-medium">{check.check}</div>
+                        {statusBadge(check.status)}
+                      </div>
+
+                      <div className="mt-3">{confidenceBadge(check.confidence)}</div>
+
+                      {check.evidence ? (
+                        <p className="mt-3 text-sm text-muted-foreground">
+                          {check.evidence}
+                        </p>
+                      ) : null}
+
+                      {check.action ? (
+                        <div className="mt-3 text-sm">
+                          <span className="font-medium">Action:</span>{" "}
+                          <span className="text-muted-foreground">{check.action}</span>
+                        </div>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ),
+
+          GA4: (
+            <div className="rounded-2xl border p-6">
+              <h2 className="mb-4 text-lg font-semibold">GA4 Analysis</h2>
+              <div className="space-y-3 text-sm text-muted-foreground">
+                <div>
+                  <span className="font-medium text-foreground">Status:</span>{" "}
+                  {ga4Check.status}
+                </div>
+                <div>
+                  <span className="font-medium text-foreground">Confidence:</span>{" "}
+                  {ga4Check.confidence}
+                </div>
+                <div>
+                  <span className="font-medium text-foreground">Evidence:</span>{" "}
+                  {ga4Check.evidence || "No direct evidence"}
+                </div>
+                <div>
+                  <span className="font-medium text-foreground">Action:</span>{" "}
+                  {ga4Check.action || "None"}
+                </div>
+              </div>
+            </div>
+          ),
+
+          GTM: (
+            <div className="rounded-2xl border p-6">
+              <h2 className="mb-4 text-lg font-semibold">GTM Container</h2>
+              <div className="space-y-3 text-sm text-muted-foreground">
+                <div>
+                  <span className="font-medium text-foreground">Status:</span>{" "}
+                  {gtmCheck.status}
+                </div>
+                <div>
+                  <span className="font-medium text-foreground">Confidence:</span>{" "}
+                  {gtmCheck.confidence}
+                </div>
+                <div>
+                  <span className="font-medium text-foreground">Evidence:</span>{" "}
+                  {gtmCheck.evidence || "No direct evidence"}
+                </div>
+                <div>
+                  <span className="font-medium text-foreground">Action:</span>{" "}
+                  {gtmCheck.action || "None"}
+                </div>
+              </div>
+            </div>
+          ),
+
+          Meta: (
+            <div className="rounded-2xl border p-6">
+              <h2 className="mb-4 text-lg font-semibold">Meta Pixel</h2>
+              <div className="space-y-3 text-sm text-muted-foreground">
+                <div>
+                  <span className="font-medium text-foreground">Status:</span>{" "}
+                  {metaCheck.status}
+                </div>
+                <div>
+                  <span className="font-medium text-foreground">Confidence:</span>{" "}
+                  {metaCheck.confidence}
+                </div>
+                <div>
+                  <span className="font-medium text-foreground">Evidence:</span>{" "}
+                  {metaCheck.evidence || "No direct evidence"}
+                </div>
+                <div>
+                  <span className="font-medium text-foreground">Action:</span>{" "}
+                  {metaCheck.action || "None"}
+                </div>
+              </div>
+            </div>
+          ),
+
+          Ecommerce: (
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="rounded-2xl border p-6">
+                <h2 className="mb-4 text-lg font-semibold">view_item</h2>
+                <div className="space-y-3 text-sm text-muted-foreground">
+                  <div>
+                    <span className="font-medium text-foreground">Status:</span>{" "}
+                    {viewItemCheck.status}
+                  </div>
+                  <div>
+                    <span className="font-medium text-foreground">Confidence:</span>{" "}
+                    {viewItemCheck.confidence}
+                  </div>
+                  <div>
+                    <span className="font-medium text-foreground">Evidence:</span>{" "}
+                    {viewItemCheck.evidence || "No direct evidence"}
+                  </div>
+                  <div>
+                    <span className="font-medium text-foreground">Action:</span>{" "}
+                    {viewItemCheck.action || "None"}
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border p-6">
+                <h2 className="mb-4 text-lg font-semibold">add_to_cart</h2>
+                <div className="space-y-3 text-sm text-muted-foreground">
+                  <div>
+                    <span className="font-medium text-foreground">Status:</span>{" "}
+                    {addToCartCheck.status}
+                  </div>
+                  <div>
+                    <span className="font-medium text-foreground">Confidence:</span>{" "}
+                    {addToCartCheck.confidence}
+                  </div>
+                  <div>
+                    <span className="font-medium text-foreground">Evidence:</span>{" "}
+                    {addToCartCheck.evidence || "No direct evidence"}
+                  </div>
+                  <div>
+                    <span className="font-medium text-foreground">Action:</span>{" "}
+                    {addToCartCheck.action || "None"}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ),
+
+          Consent: (
+            <div className="rounded-2xl border p-6">
+              <h2 className="mb-4 text-lg font-semibold">Consent</h2>
+              <div className="space-y-3 text-sm text-muted-foreground">
+                <div>
+                  <span className="font-medium text-foreground">Status:</span>{" "}
+                  {consentCheck.status}
+                </div>
+                <div>
+                  <span className="font-medium text-foreground">Confidence:</span>{" "}
+                  {consentCheck.confidence}
+                </div>
+                <div>
+                  <span className="font-medium text-foreground">Evidence:</span>{" "}
+                  {consentCheck.evidence || "No direct evidence"}
+                </div>
+                <div>
+                  <span className="font-medium text-foreground">Action:</span>{" "}
+                  {consentCheck.action || "None"}
+                </div>
+              </div>
+            </div>
+          ),
+
+          Evidence: (
+            <div className="grid gap-4 xl:grid-cols-2">
+              <div className="rounded-2xl border p-6">
+                <h2 className="text-lg font-semibold">Detected IDs</h2>
+                <div className="mt-4 space-y-3 text-sm text-muted-foreground">
+                  <div>
+                    <span className="font-medium text-foreground">GTM:</span>{" "}
+                    {gtmCheck.evidence || "None"}
+                  </div>
+                  <div>
+                    <span className="font-medium text-foreground">GA4:</span>{" "}
+                    {ga4Check.evidence || "None"}
+                  </div>
+                  <div>
+                    <span className="font-medium text-foreground">Meta:</span>{" "}
+                    {metaCheck.evidence || "None"}
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border p-6">
+                <h2 className="text-lg font-semibold">Runtime Signals</h2>
+                <div className="mt-4 space-y-3 text-sm text-muted-foreground">
+                  <div>
+                    <span className="font-medium text-foreground">dataLayer:</span>{" "}
+                    {Array.isArray(timeline)
+                      ? timeline
+                          .filter((t) => t.type === "datalayer")
+                          .map((t) => t.name)
+                          .filter(Boolean)
+                          .slice(0, 20)
+                          .join(", ") || "None"
+                      : "None"}
+                  </div>
+                  <div>
+                    <span className="font-medium text-foreground">gtag:</span>{" "}
+                    {raw?.signals?.gtagEvents?.length
+                      ? raw.signals.gtagEvents.join(", ")
+                      : "None"}
+                  </div>
+                  <div>
+                    <span className="font-medium text-foreground">fbq:</span>{" "}
+                    {raw?.signals?.fbqEvents?.length
+                      ? raw.signals.fbqEvents.join(", ")
+                      : "None"}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ),
+
+          Timeline: <ScanTimeline timeline={timeline} />,
+        }}
+      />
     </div>
   );
 }
