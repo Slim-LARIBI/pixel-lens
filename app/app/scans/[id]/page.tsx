@@ -1,6 +1,8 @@
 import { notFound } from "next/navigation";
 import ScanTabs from "@/components/scan-tabs";
 import ScanTimeline from "@/components/scan-timeline";
+import EcommerceFunnel from "@/components/ecommerce-funnel";
+import TrackingGraph from "@/components/tracking-graph";
 import Link from "next/link";
 import { db } from "@/lib/db";
 
@@ -179,6 +181,22 @@ export default async function ScanDetailPage({
     ? report.insights
     : [];
 
+
+  // =========================================================
+  // Meta Inspector data
+  // Reads advanced Meta payload audit from runtime scan report
+  // =========================================================
+  const metaInspector = report?.metaInspector ?? {
+  totalCapturedMetaPayloads: 0,
+  events: [],
+  funnel: {
+    score: 0,
+    mainRisk: "No Meta funnel data",
+    steps: [],
+  },
+  insights: [],
+};
+
   const platform = report?.platform || "Unknown";
   const pageType = report?.pageType || "Unknown";
   const confidence: Confidence =
@@ -198,6 +216,12 @@ export default async function ScanDetailPage({
   const addToCartCheck = getCheckByName(checks, "add_to_cart");
   const checkoutCheck = getCheckByName(checks, "Checkout");
   const capiCheck = getCheckByName(checks, "CAPI");
+  const ecommerceScore =
+  (viewItemCheck.status === "CONFIRMED" ? 50 : viewItemCheck.status === "PARTIAL" ? 25 : 0) +
+  (addToCartCheck.status === "CONFIRMED" ? 50 : addToCartCheck.status === "PARTIAL" ? 25 : 0);
+  const trackingHealthScore = Math.round(
+  (gtm + ga4 + meta + consent + ecommerceScore) / 5
+);
 
   const pagesTested =
     (raw?.v2?.categoryPagesTested?.length || 0) +
@@ -248,9 +272,9 @@ export default async function ScanDetailPage({
 
           <div className="min-w-[220px] rounded-2xl border bg-white p-5 shadow-sm">
             <div className="text-sm text-muted-foreground">Tracking Health Score</div>
-            <div className="mt-2 text-5xl font-bold">{overallScore}</div>
+            <div className="mt-2 text-5xl font-bold">{trackingHealthScore}</div>
             <div className="mt-1 text-sm text-muted-foreground">/ 100</div>
-            <ProgressBar value={overallScore} />
+            <ProgressBar value={trackingHealthScore} />
             <div className="mt-3">{confidenceBadge(confidence)}</div>
           </div>
         </div>
@@ -259,8 +283,8 @@ export default async function ScanDetailPage({
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
         <div className="rounded-2xl border p-5">
           <div className="text-sm text-muted-foreground">Tracking Health</div>
-          <div className="mt-2 text-3xl font-bold">{overallScore}</div>
-          <ProgressBar value={overallScore} />
+          <div className="mt-2 text-3xl font-bold">{trackingHealthScore}</div>
+          <ProgressBar value={trackingHealthScore} />
         </div>
 
         <div className="rounded-2xl border p-5">
@@ -308,8 +332,7 @@ export default async function ScanDetailPage({
                   title="Channel Health"
                   subtitle="Quick view of your tracking stack by channel."
                 />
-
-                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
                   <div className="rounded-2xl border p-5">
                     <div className="flex items-center justify-between">
                       <div className="font-medium">GA4</div>
@@ -318,7 +341,6 @@ export default async function ScanDetailPage({
                     <div className="mt-3 text-3xl font-bold">{ga4}</div>
                     <ProgressBar value={ga4} />
                   </div>
-
                   <div className="rounded-2xl border p-5">
                     <div className="flex items-center justify-between">
                       <div className="font-medium">GTM</div>
@@ -345,6 +367,21 @@ export default async function ScanDetailPage({
                     <div className="mt-3 text-3xl font-bold">{consent}</div>
                     <ProgressBar value={consent} />
                   </div>
+                  <div className="rounded-2xl border p-5">
+                          <div className="flex items-center justify-between">
+                            <div className="font-medium">Ecommerce</div>
+                            {viewItemCheck.status === "CONFIRMED" || addToCartCheck.status === "CONFIRMED"
+                              ? statusBadge(
+                                  viewItemCheck.status === "CONFIRMED" &&
+                                    addToCartCheck.status === "CONFIRMED"
+                                    ? "CONFIRMED"
+                                    : "PARTIAL"
+                                )
+                              : statusBadge("NOT_CONFIRMED")}
+                          </div>
+                          <div className="mt-3 text-3xl font-bold">{ecommerceScore}</div>
+                          <ProgressBar value={ecommerceScore} />
+                        </div>
                 </div>
               </div>
 
@@ -552,29 +589,371 @@ export default async function ScanDetailPage({
             </div>
           ),
 
-          Meta: (
-            <div className="rounded-2xl border p-6">
-              <h2 className="mb-4 text-lg font-semibold">Meta Pixel</h2>
-              <div className="space-y-3 text-sm text-muted-foreground">
-                <div>
-                  <span className="font-medium text-foreground">Status:</span>{" "}
-                  {metaCheck.status}
-                </div>
-                <div>
-                  <span className="font-medium text-foreground">Confidence:</span>{" "}
-                  {metaCheck.confidence}
-                </div>
-                <div>
-                  <span className="font-medium text-foreground">Evidence:</span>{" "}
-                  {metaCheck.evidence || "No direct evidence"}
-                </div>
-                <div>
-                  <span className="font-medium text-foreground">Action:</span>{" "}
-                  {metaCheck.action || "None"}
-                </div>
+
+
+Meta: (
+  <div className="space-y-6">
+    {/* =========================================================
+        META OVERVIEW
+    ========================================================= */}
+    <div className="rounded-2xl border p-6">
+      <h2 className="mb-4 text-lg font-semibold">Meta Pixel</h2>
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <div className="rounded-2xl border p-4">
+          <div className="text-sm text-muted-foreground">Status</div>
+          <div className="mt-2">{statusBadge(metaCheck.status)}</div>
+        </div>
+
+        <div className="rounded-2xl border p-4">
+          <div className="text-sm text-muted-foreground">Confidence</div>
+          <div className="mt-2">{confidenceBadge(metaCheck.confidence)}</div>
+        </div>
+
+        <div className="rounded-2xl border p-4">
+          <div className="text-sm text-muted-foreground">Payloads Captured</div>
+          <div className="mt-2 text-2xl font-bold">
+            {metaInspector?.totalCapturedMetaPayloads ?? 0}
+          </div>
+        </div>
+
+        <div className="rounded-2xl border p-4">
+          <div className="text-sm text-muted-foreground">Events Audited</div>
+          <div className="mt-2 text-2xl font-bold">
+            {Array.isArray(metaInspector?.events) ? metaInspector.events.length : 0}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-5 space-y-3 text-sm text-muted-foreground">
+        <div>
+          <span className="font-medium text-foreground">Evidence:</span>{" "}
+          {metaCheck.evidence || "No direct evidence"}
+        </div>
+        <div>
+          <span className="font-medium text-foreground">Action:</span>{" "}
+          {metaCheck.action || "None"}
+        </div>
+      </div>
+    </div>
+
+{/* =========================================================
+    META FUNNEL ENGINE
+========================================================= */}
+<div className="rounded-2xl border p-6">
+  <div className="mb-4 flex items-start justify-between gap-4">
+    <div>
+      <h3 className="text-lg font-semibold">Meta Funnel Engine</h3>
+      <p className="mt-1 text-sm text-muted-foreground">
+        Visual validation of core Meta ecommerce events
+      </p>
+    </div>
+
+    <div className="text-right">
+      <div className="text-sm text-muted-foreground">Funnel Score</div>
+      <div className="text-2xl font-bold">
+        {metaInspector?.funnel?.score ?? 0}/100
+      </div>
+    </div>
+  </div>
+
+  <div className="mb-5 h-2 w-full rounded-full bg-slate-100">
+    <div
+      className="h-2 rounded-full bg-slate-900"
+      style={{ width: `${Math.max(0, Math.min(100, metaInspector?.funnel?.score ?? 0))}%` }}
+    />
+  </div>
+
+  <div className="mb-5 rounded-xl border p-4">
+    <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+      Main Risk
+    </div>
+    <div className="mt-2 text-sm font-medium">
+      {metaInspector?.funnel?.mainRisk || "No Meta funnel data"}
+    </div>
+  </div>
+
+  <div className="grid gap-4 md:grid-cols-3">
+    {Array.isArray(metaInspector?.funnel?.steps) && metaInspector.funnel.steps.length > 0 ? (
+      metaInspector.funnel.steps.map((step: any) => (
+        <div key={step.step} className="rounded-2xl border p-5">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-base font-semibold">{step.step}</div>
+              <div className="mt-1 text-sm text-muted-foreground">
+                Captured {step.count} time{step.count > 1 ? "s" : ""}
               </div>
             </div>
-          ),
+
+            <span
+              className={`rounded-full border px-2 py-1 text-xs font-medium ${
+                step.status === "OK"
+                  ? "border-green-200 bg-green-50 text-green-700"
+                  : step.status === "PARTIAL"
+                  ? "border-yellow-200 bg-yellow-50 text-yellow-700"
+                  : "border-red-200 bg-red-50 text-red-700"
+              }`}
+            >
+              {step.status}
+            </span>
+          </div>
+
+          <div className="mt-4">
+            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Payload Quality
+            </div>
+            <div className="mt-2 text-lg font-semibold">{step.payloadQualityScore}/100</div>
+          </div>
+
+          <div className="mt-4">
+            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Critical Issues
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {Array.isArray(step.criticalIssues) && step.criticalIssues.length > 0 ? (
+                step.criticalIssues.map((issue: string) => (
+                  <span
+                    key={issue}
+                    className="rounded-full border border-red-200 bg-red-50 px-2 py-1 text-xs text-red-700"
+                  >
+                    {issue}
+                  </span>
+                ))
+              ) : (
+                <span className="rounded-full border border-green-200 bg-green-50 px-2 py-1 text-xs text-green-700">
+                  No critical issues
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      ))
+    ) : (
+      <div className="md:col-span-3 rounded-2xl border border-dashed p-6 text-sm text-muted-foreground">
+        No Meta funnel data available yet.
+      </div>
+    )}
+  </div>
+</div>
+
+{/* =========================================================
+    META INSIGHTS ENGINE
+========================================================= */}
+<div className="rounded-2xl border p-6">
+  <div className="mb-4 flex items-center justify-between">
+    <div>
+      <h3 className="text-lg font-semibold">Meta Insights Engine</h3>
+      <p className="mt-1 text-sm text-muted-foreground">
+        Business diagnosis based on Meta tracking quality
+      </p>
+    </div>
+  </div>
+
+  {!Array.isArray(metaInspector?.insights) || metaInspector.insights.length === 0 ? (
+    <div className="rounded-2xl border border-dashed p-6 text-sm text-muted-foreground">
+      No insights generated yet.
+    </div>
+  ) : (
+    <div className="space-y-4">
+      {metaInspector.insights.map((insight: any, idx: number) => (
+        <div key={idx} className="rounded-2xl border p-5">
+          <div className="flex items-start justify-between gap-4">
+            <div className="text-base font-semibold">
+              {insight.title}
+            </div>
+
+            <span
+              className={`rounded-full border px-2 py-1 text-xs font-medium ${
+                insight.priority === "HIGH"
+                  ? "border-red-200 bg-red-50 text-red-700"
+                  : insight.priority === "MEDIUM"
+                  ? "border-yellow-200 bg-yellow-50 text-yellow-700"
+                  : "border-green-200 bg-green-50 text-green-700"
+              }`}
+            >
+              {insight.priority}
+            </span>
+          </div>
+
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            <div className="rounded-xl border p-4">
+              <div className="text-xs uppercase text-muted-foreground">
+                Impact
+              </div>
+              <p className="mt-2 text-sm text-muted-foreground">
+                {insight.impact}
+              </p>
+            </div>
+
+            <div className="rounded-xl border p-4">
+              <div className="text-xs uppercase text-muted-foreground">
+                Recommended Action
+              </div>
+              <p className="mt-2 text-sm text-muted-foreground">
+                {insight.action}
+              </p>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  )}
+</div>
+
+    {/* =========================================================
+        META PAYLOAD INSPECTOR
+    ========================================================= */}
+    <div className="rounded-2xl border p-6">
+      <div className="mb-4 flex items-center justify-between">
+        <h3 className="text-lg font-semibold">Meta Payload Inspector</h3>
+        <div className="text-sm text-muted-foreground">
+          Runtime event parameters captured from fbq(...)
+        </div>
+      </div>
+
+      {!Array.isArray(metaInspector?.events) || metaInspector.events.length === 0 ? (
+        <div className="rounded-2xl border border-dashed p-6 text-sm text-muted-foreground">
+          No Meta event payload captured yet.
+        </div>
+      ) : (
+        <div className="grid gap-4 xl:grid-cols-2">
+          {metaInspector.events.map((item: any, idx: number) => (
+            <div key={`${item.event}-${idx}`} className="rounded-2xl border p-5">
+              {/* Header */}
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-base font-semibold">{item.event}</div>
+                  <div className="mt-1 text-sm text-muted-foreground">
+                    Captured {item.count} time{item.count > 1 ? "s" : ""}
+                  </div>
+                </div>
+
+                <div className="rounded-full border px-3 py-1 text-sm font-semibold">
+                  {item.payloadQualityScore}/100
+                </div>
+              </div>
+
+              {/* Required / Missing */}
+              <div className="mt-5 grid gap-4 md:grid-cols-2">
+                <div className="rounded-xl border p-4">
+                  <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    Required Params
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {Array.isArray(item.requiredParams) && item.requiredParams.length > 0 ? (
+                      item.requiredParams.map((param: string) => (
+                        <span
+                          key={param}
+                          className="rounded-full border bg-slate-50 px-2 py-1 text-xs"
+                        >
+                          {param}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="text-sm text-muted-foreground">No required params rule</span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="rounded-xl border p-4">
+                  <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    Missing Params
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {Array.isArray(item.missingParams) && item.missingParams.length > 0 ? (
+                      item.missingParams.map((param: string) => (
+                        <span
+                          key={param}
+                          className="rounded-full border border-red-200 bg-red-50 px-2 py-1 text-xs text-red-700"
+                        >
+                          {param}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="rounded-full border border-green-200 bg-green-50 px-2 py-1 text-xs text-green-700">
+                        No missing params
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Present params */}
+              <div className="mt-4 rounded-xl border p-4">
+                <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Present Params
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {Array.isArray(item.presentParams) && item.presentParams.length > 0 ? (
+                    item.presentParams.map((param: string) => (
+                      <span
+                        key={param}
+                        className="rounded-full border border-green-200 bg-green-50 px-2 py-1 text-xs text-green-700"
+                      >
+                        {param}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="text-sm text-muted-foreground">No params detected</span>
+                  )}
+                </div>
+              </div>
+
+                {/* Critical issues */}
+                    <div className="mt-4 rounded-xl border p-4">
+                      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                        Critical Issues
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {Array.isArray(item.criticalIssues) && item.criticalIssues.length > 0 ? (
+                          item.criticalIssues.map((issue: string) => (
+                            <span
+                              key={issue}
+                              className="rounded-full border border-red-200 bg-red-50 px-2 py-1 text-xs text-red-700"
+                            >
+                              {issue}
+                            </span>
+                          ))
+                        ) : (
+                          <span className="rounded-full border border-green-200 bg-green-50 px-2 py-1 text-xs text-green-700">
+                            No critical issues
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+              {/* Sample payloads */}
+              <div className="mt-4">
+                <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Sample Payloads
+                </div>
+
+                {Array.isArray(item.samples) && item.samples.length > 0 ? (
+                  <div className="space-y-3">
+                    {item.samples.map((sample: any, sampleIdx: number) => (
+                      <details key={sampleIdx} className="rounded-xl border p-3">
+                        <summary className="cursor-pointer text-sm font-medium">
+                          Sample #{sampleIdx + 1}
+                        </summary>
+                        <pre className="mt-3 overflow-x-auto rounded-xl bg-slate-50 p-3 text-xs">
+                          {JSON.stringify(sample?.params || {}, null, 2)}
+                        </pre>
+                      </details>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">
+                    No sample payload available.
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  </div>
+),
 
           Ecommerce: (
             <div className="grid gap-4 md:grid-cols-2">
@@ -696,6 +1075,28 @@ export default async function ScanDetailPage({
                   </div>
                 </div>
               </div>
+            </div>
+          ),
+
+          Funnel: (
+            <EcommerceFunnel
+              timeline={timeline}
+              raw={raw}
+            />
+          ),
+          Graph: (
+            <div className="rounded-2xl border p-6">
+              <h2 className="mb-4 text-lg font-semibold">
+                Tracking Architecture Graph
+              </h2>
+
+              <TrackingGraph
+                gtm={gtm}
+                ga4={ga4}
+                meta={meta}
+                consent={consent}
+                capi={capi}
+              />
             </div>
           ),
 

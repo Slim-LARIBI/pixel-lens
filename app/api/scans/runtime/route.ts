@@ -104,6 +104,497 @@ function inferPageType(url: string) {
 
   return "Unknown";
 }
+// =========================================================
+// META MODULE — TYPES
+// =========================================================
+
+type MetaPayloadRecord = {
+  cmd?: string;
+  event?: string;
+  params?: Record<string, any>;
+  ts?: number;
+};
+
+type MetaEventAudit = {
+  event: string;
+  count: number;
+  requiredParams: string[];
+  presentParams: string[];
+  missingParams: string[];
+  payloadQualityScore: number;
+  criticalIssues: string[];
+  samples: Array<Record<string, any>>;
+};
+
+type MetaFunnelStep = {
+  step: "ViewContent" | "AddToCart" | "Purchase";
+  detected: boolean;
+  count: number;
+  payloadQualityScore: number;
+  criticalIssues: string[];
+  status: "OK" | "PARTIAL" | "MISSING";
+};
+
+type MetaInsight = {
+  priority: "HIGH" | "MEDIUM" | "LOW";
+  title: string;
+  impact: string;
+  action: string;
+};
+
+// =========================================================
+// META MODULE — NORMALIZATION
+// =========================================================
+
+function normalizeMetaEventName(eventName: string) {
+  const e = String(eventName || "").trim();
+  if (!e) return "";
+
+  const mapping: Record<string, string> = {
+    ViewContent: "ViewContent",
+    AddToCart: "AddToCart",
+    InitiateCheckout: "InitiateCheckout",
+    Purchase: "Purchase",
+    PageView: "PageView",
+    Lead: "Lead",
+    CompleteRegistration: "CompleteRegistration",
+  };
+
+  return mapping[e] || e;
+}
+
+function getMetaRequiredParams(eventName: string) {
+  switch (eventName) {
+    case "ViewContent":
+      return ["content_ids", "content_type"];
+    case "AddToCart":
+      return ["content_ids", "content_type", "value", "currency"];
+    case "Purchase":
+      return ["value", "currency"];
+    case "InitiateCheckout":
+      return ["value", "currency"];
+    default:
+      return [];
+  }
+}
+
+// =========================================================
+// META MODULE — VALUE HELPERS
+// =========================================================
+
+function hasMeaningfulValue(value: any) {
+  if (value === null || value === undefined) return false;
+  if (typeof value === "string" && value.trim() === "") return false;
+  if (Array.isArray(value) && value.length === 0) return false;
+  return true;
+}
+
+function isNumericLike(value: any) {
+  if (typeof value === "number") return !Number.isNaN(value);
+  if (typeof value === "string" && value.trim() !== "" && !Number.isNaN(Number(value))) {
+    return true;
+  }
+  return false;
+}
+
+function getNumericValue(value: any) {
+  if (typeof value === "number") return value;
+  if (typeof value === "string") return Number(value);
+  return NaN;
+}
+
+function isNonEmptyString(value: any) {
+  return typeof value === "string" && value.trim() !== "";
+}
+
+// =========================================================
+// META MODULE — CRITICAL ISSUES
+// =========================================================
+
+function buildMetaCriticalIssues(eventName: string, samples: MetaPayloadRecord[]) {
+  const issues = new Set<string>();
+
+  for (const sample of samples) {
+    const params = sample?.params || {};
+
+    // ------------------------------------------------------
+    // ViewContent / AddToCart core ecommerce rules
+    // ------------------------------------------------------
+    if (
+      ["ViewContent", "AddToCart"].includes(eventName) &&
+      !hasMeaningfulValue(params.content_ids)
+    ) {
+      issues.add("content_ids missing");
+    }
+
+    if (
+      ["ViewContent", "AddToCart"].includes(eventName) &&
+      hasMeaningfulValue(params.content_ids) &&
+      !Array.isArray(params.content_ids)
+    ) {
+      issues.add("content_ids should be an array");
+    }
+
+    if (
+      ["ViewContent", "AddToCart"].includes(eventName) &&
+      !hasMeaningfulValue(params.content_type)
+    ) {
+      issues.add("content_type missing");
+    }
+
+    // ------------------------------------------------------
+    // AddToCart / Purchase / InitiateCheckout value rules
+    // ------------------------------------------------------
+    if (
+      ["AddToCart", "InitiateCheckout", "Purchase"].includes(eventName) &&
+      !hasMeaningfulValue(params.currency)
+    ) {
+      issues.add("currency missing");
+    }
+
+    if (
+      ["AddToCart", "InitiateCheckout", "Purchase"].includes(eventName) &&
+      hasMeaningfulValue(params.currency) &&
+      !isNonEmptyString(params.currency)
+    ) {
+      issues.add("currency should be a string");
+    }
+
+    if (
+      ["AddToCart", "InitiateCheckout", "Purchase"].includes(eventName) &&
+      !hasMeaningfulValue(params.value)
+    ) {
+      issues.add("value missing");
+    }
+
+    if (
+      ["AddToCart", "InitiateCheckout", "Purchase"].includes(eventName) &&
+      hasMeaningfulValue(params.value) &&
+      !isNumericLike(params.value)
+    ) {
+      issues.add("value should be numeric");
+    }
+
+    if (
+      ["AddToCart", "InitiateCheckout", "Purchase"].includes(eventName) &&
+      isNumericLike(params.value) &&
+      getNumericValue(params.value) <= 0
+    ) {
+      issues.add("value should be greater than 0");
+    }
+
+    // ------------------------------------------------------
+    // Purchase-specific rules
+    // ------------------------------------------------------
+    if (
+      eventName === "Purchase" &&
+      !hasMeaningfulValue(params.contents) &&
+      !hasMeaningfulValue(params.content_ids)
+    ) {
+      issues.add("purchase should contain contents or content_ids");
+    }
+
+    // ------------------------------------------------------
+    // Optional ecommerce structure validation
+    // ------------------------------------------------------
+    if (
+      hasMeaningfulValue(params.contents) &&
+      !Array.isArray(params.contents)
+    ) {
+      issues.add("contents should be an array");
+    }
+  }
+
+  return Array.from(issues);
+}
+
+// =========================================================
+// META MODULE — EVENT AUDIT
+// =========================================================
+
+function buildMetaAudit(metaPayloads: MetaPayloadRecord[]) {
+  const grouped = new Map<string, MetaPayloadRecord[]>();
+
+  for (const entry of metaPayloads || []) {
+    const normalizedEvent = normalizeMetaEventName(String(entry?.event || ""));
+    if (!normalizedEvent) continue;
+
+    // Keep only the key Meta ecommerce events for now
+    if (!["ViewContent", "AddToCart", "Purchase"].includes(normalizedEvent)) {
+      continue;
+    }
+
+    if (!grouped.has(normalizedEvent)) {
+      grouped.set(normalizedEvent, []);
+    }
+
+    grouped.get(normalizedEvent)!.push(entry);
+  }
+
+  const audits: MetaEventAudit[] = [];
+
+  for (const [event, items] of grouped.entries()) {
+    const requiredParams = getMetaRequiredParams(event);
+
+    const paramSet = new Set<string>();
+    for (const item of items) {
+      const params = item?.params || {};
+      for (const key of Object.keys(params)) {
+        if (hasMeaningfulValue(params[key])) {
+          paramSet.add(key);
+        }
+      }
+    }
+
+    const presentParams = Array.from(paramSet).sort();
+    const missingParams = requiredParams.filter((p) => !paramSet.has(p));
+    const criticalIssues = buildMetaCriticalIssues(event, items);
+
+    const matchedRequiredCount = presentParams.filter((p) =>
+      requiredParams.includes(p)
+    ).length;
+
+    let payloadQualityScore =
+      requiredParams.length === 0
+        ? 100
+        : Math.round((matchedRequiredCount / requiredParams.length) * 100);
+
+    // Penalize critical issues
+    if (criticalIssues.length > 0) {
+      payloadQualityScore = Math.max(0, payloadQualityScore - criticalIssues.length * 15);
+    }
+
+    audits.push({
+      event,
+      count: items.length,
+      requiredParams,
+      presentParams,
+      missingParams,
+      payloadQualityScore,
+      criticalIssues,
+      samples: items.slice(0, 3).map((x) => ({
+        params: x.params || {},
+        ts: x.ts || null,
+      })),
+    });
+  }
+
+  const preferredOrder = ["ViewContent", "AddToCart", "Purchase"];
+
+  return audits.sort(
+    (a, b) => preferredOrder.indexOf(a.event) - preferredOrder.indexOf(b.event)
+  );
+}
+
+// =========================================================
+// META MODULE — FUNNEL ENGINE
+// =========================================================
+
+function buildMetaFunnel(metaAudit: MetaEventAudit[]) {
+  const getEvent = (name: string) =>
+    metaAudit.find((item) => item.event === name);
+
+  const viewContent = getEvent("ViewContent");
+  const addToCart = getEvent("AddToCart");
+  const purchase = getEvent("Purchase");
+
+  const steps: MetaFunnelStep[] = [
+    {
+      step: "ViewContent",
+      detected: !!viewContent,
+      count: viewContent?.count || 0,
+      payloadQualityScore: viewContent?.payloadQualityScore || 0,
+      criticalIssues: viewContent?.criticalIssues || [],
+      status: !viewContent
+        ? "MISSING"
+        : viewContent.payloadQualityScore >= 80 &&
+          (viewContent.criticalIssues?.length || 0) === 0
+        ? "OK"
+        : "PARTIAL",
+    },
+    {
+      step: "AddToCart",
+      detected: !!addToCart,
+      count: addToCart?.count || 0,
+      payloadQualityScore: addToCart?.payloadQualityScore || 0,
+      criticalIssues: addToCart?.criticalIssues || [],
+      status: !addToCart
+        ? "MISSING"
+        : addToCart.payloadQualityScore >= 80 &&
+          (addToCart.criticalIssues?.length || 0) === 0
+        ? "OK"
+        : "PARTIAL",
+    },
+    {
+      step: "Purchase",
+      detected: !!purchase,
+      count: purchase?.count || 0,
+      payloadQualityScore: purchase?.payloadQualityScore || 0,
+      criticalIssues: purchase?.criticalIssues || [],
+      status: !purchase
+        ? "MISSING"
+        : purchase.payloadQualityScore >= 80 &&
+          (purchase.criticalIssues?.length || 0) === 0
+        ? "OK"
+        : "PARTIAL",
+    },
+  ];
+
+  let score = 0;
+  for (const step of steps) {
+    if (step.status === "OK") score += 100 / 3;
+    else if (step.status === "PARTIAL") score += 50 / 3;
+  }
+
+  const roundedScore = Math.round(score);
+
+  let mainRisk = "No major Meta funnel risk detected";
+  if (steps.find((s) => s.step === "Purchase" && s.status === "MISSING")) {
+    mainRisk = "Purchase event missing";
+  } else if (steps.find((s) => s.step === "AddToCart" && s.status === "MISSING")) {
+    mainRisk = "AddToCart event missing";
+  } else if (steps.find((s) => s.step === "ViewContent" && s.status === "MISSING")) {
+    mainRisk = "ViewContent event missing";
+  } else {
+    const partial = steps.find((s) => s.status === "PARTIAL");
+    if (partial) {
+      mainRisk = `${partial.step} payload quality needs review`;
+    }
+  }
+
+  return {
+    score: roundedScore,
+    mainRisk,
+    steps,
+  };
+}
+
+// =========================================================
+// META MODULE — INSIGHTS ENGINE
+// =========================================================
+
+function buildMetaInsights(
+  metaAudit: MetaEventAudit[],
+  metaFunnel: ReturnType<typeof buildMetaFunnel>
+) {
+  const insights: MetaInsight[] = [];
+
+  const getStep = (name: "ViewContent" | "AddToCart" | "Purchase") =>
+    metaFunnel.steps.find((s) => s.step === name);
+
+  const viewContent = getStep("ViewContent");
+  const addToCart = getStep("AddToCart");
+  const purchase = getStep("Purchase");
+
+  // ------------------------------------------------------
+  // Funnel-level insights
+  // ------------------------------------------------------
+  if (purchase?.status === "MISSING") {
+    insights.push({
+      priority: "HIGH",
+      title: "Purchase event missing",
+      impact: "Revenue tracking is incomplete and ROAS reporting may be unreliable in Meta.",
+      action: "Validate Purchase firing on the confirmation page and confirm value/currency are sent.",
+    });
+  }
+
+  if (addToCart?.status === "MISSING") {
+    insights.push({
+      priority: "HIGH",
+      title: "AddToCart event missing",
+      impact: "Meta may lose key optimization signals for lower-funnel intent.",
+      action: "Validate AddToCart firing on product pages and cart interactions.",
+    });
+  }
+
+  if (viewContent?.status === "MISSING") {
+    insights.push({
+      priority: "MEDIUM",
+      title: "ViewContent event missing",
+      impact: "Product view signals are incomplete, which can reduce catalog and retargeting quality.",
+      action: "Validate ViewContent firing on product detail pages.",
+    });
+  }
+
+  // ------------------------------------------------------
+  // Cross-event consistency insights
+  // ------------------------------------------------------
+  if (purchase?.detected && !addToCart?.detected) {
+    insights.push({
+      priority: "MEDIUM",
+      title: "Purchase detected without AddToCart",
+      impact: "The Meta funnel is inconsistent and lower-funnel behavior may be under-tracked.",
+      action: "Review AddToCart implementation and confirm it fires before checkout steps.",
+    });
+  }
+
+  if (addToCart?.detected && !viewContent?.detected) {
+    insights.push({
+      priority: "MEDIUM",
+      title: "AddToCart detected without ViewContent",
+      impact: "Meta receives cart intent signals but misses product view context, reducing funnel clarity.",
+      action: "Review ViewContent implementation on product detail pages.",
+    });
+  }
+
+  // ------------------------------------------------------
+  // Payload-level insights
+  // ------------------------------------------------------
+  for (const eventAudit of metaAudit) {
+    if (eventAudit.missingParams.length > 0) {
+      insights.push({
+        priority: "HIGH",
+        title: `${eventAudit.event} missing required params`,
+        impact: "Meta may receive incomplete ecommerce data, which can degrade attribution and optimization quality.",
+        action: `Add the missing params for ${eventAudit.event}: ${eventAudit.missingParams.join(", ")}.`,
+      });
+    }
+
+    if (eventAudit.criticalIssues.length > 0) {
+      insights.push({
+        priority: "HIGH",
+        title: `${eventAudit.event} has critical payload issues`,
+        impact: "Meta may process the event incorrectly or with reduced ecommerce signal quality.",
+        action: `Fix the critical issues for ${eventAudit.event}: ${eventAudit.criticalIssues.join(", ")}.`,
+      });
+    }
+
+    if (
+      eventAudit.payloadQualityScore < 100 &&
+      eventAudit.payloadQualityScore >= 60 &&
+      eventAudit.criticalIssues.length === 0 &&
+      eventAudit.missingParams.length === 0
+    ) {
+      insights.push({
+        priority: "MEDIUM",
+        title: `${eventAudit.event} payload quality needs review`,
+        impact: "The event is detected but payload quality is not fully optimal.",
+        action: `Review optional ecommerce params for ${eventAudit.event} and validate payload consistency.`,
+      });
+    }
+  }
+
+  // ------------------------------------------------------
+  // Positive signal
+  // ------------------------------------------------------
+  const strongCore =
+    viewContent?.status === "OK" &&
+    addToCart?.status === "OK" &&
+    purchase?.status === "OK";
+
+  if (strongCore) {
+    insights.push({
+      priority: "LOW",
+      title: "Core Meta ecommerce funnel is healthy",
+      impact: "Meta receives strong lower-funnel signals across the main ecommerce journey.",
+      action: "Maintain monitoring and validate this setup regularly after site changes.",
+    });
+  }
+
+  const priorityOrder = { HIGH: 0, MEDIUM: 1, LOW: 2 };
+
+  return insights.sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority]);
+}
 
 async function tryAutoConsent(page: any, timeline: TimelineItem[]) {
   const candidates = [
@@ -322,6 +813,22 @@ async function runRuntimeScan(url: string) {
       categoryPagesTested: [] as string[],
       productPagesTested: [] as string[],
     },
+     // ✅ AJOUT ICI
+        trackingPayloads: {
+          metaPayloads: [] as Array<{
+            cmd: string;
+            event: string;
+            params: Record<string, any>;
+            ts: number;
+          }>,
+          ga4Payloads: [] as Array<{
+            event: string;
+            params: Record<string, any>;
+            ts: number;
+          }>,
+          metaNetworkEvents: [] as Array<Record<string, any>>,
+          ga4NetworkEvents: [] as Array<Record<string, any>>,
+        },
     report: {
       platform: "Unknown",
       pageType: "Unknown",
@@ -399,47 +906,168 @@ async function runRuntimeScan(url: string) {
     }
   });
 
-  await page.addInitScript(() => {
-    // @ts-ignore
-    window.__PIXELLENS__ = { dl: [], gtag: [], fbq: [] };
+await page.addInitScript(() => {
+  // =========================================================
+  // PixelLens Runtime Hooks
+  // Goal:
+  // - capture dataLayer pushes
+  // - capture gtag events + params
+  // - capture Meta fbq events + params
+  // - survive delayed script loading (fbq/gtag may load later)
+  // =========================================================
 
-    // @ts-ignore
-    window.dataLayer = window.dataLayer || [];
-    const dl = window.dataLayer;
-    const originalPush = dl.push.bind(dl);
+  // @ts-ignore
+  window.__PIXELLENS__ = {
+    dl: [],
+    gtag: [],
+    fbq: [],
+    metaPayloads: [],
+    ga4Payloads: [],
+  };
 
-    dl.push = function (...args: any[]) {
-      try {
-        // @ts-ignore
-        window.__PIXELLENS__.dl.push(args);
-      } catch {}
-      return originalPush(...args);
-    };
+  // =========================================================
+  // 1) dataLayer hook
+  // =========================================================
+  // @ts-ignore
+  window.dataLayer = window.dataLayer || [];
+  // @ts-ignore
+  const dl = window.dataLayer;
+  const originalPush = dl.push.bind(dl);
 
-    // @ts-ignore
-    const oldGtag = window.gtag;
-    // @ts-ignore
-    window.gtag = function (...args: any[]) {
-      try {
-        // @ts-ignore
-        window.__PIXELLENS__.gtag.push(args);
-      } catch {}
+  dl.push = function (...args: any[]) {
+    try {
       // @ts-ignore
-      if (typeof oldGtag === "function") return oldGtag(...args);
-    };
+      window.__PIXELLENS__.dl.push(args);
+    } catch {}
 
-    // @ts-ignore
-    const oldFbq = window.fbq;
-    // @ts-ignore
-    window.fbq = function (...args: any[]) {
-      try {
-        // @ts-ignore
-        window.__PIXELLENS__.fbq.push(args);
-      } catch {}
+    return originalPush(...args);
+  };
+
+  // =========================================================
+  // 2) gtag hook
+  // Captures:
+  // gtag("event", "view_item", {...})
+  // =========================================================
+  const attachGtagHook = () => {
+    try {
       // @ts-ignore
-      if (typeof oldFbq === "function") return oldFbq(...args);
-    };
-  });
+      const currentGtag = window.gtag;
+      // @ts-ignore
+      if (typeof currentGtag !== "function" || currentGtag.__pixelLensWrapped) {
+        return false;
+      }
+
+      const wrapped = function (...args: any[]) {
+        try {
+          // @ts-ignore
+          window.__PIXELLENS__.gtag.push(args);
+
+          const [cmd, eventName, params] = args;
+          if (cmd === "event" && eventName) {
+            // @ts-ignore
+            window.__PIXELLENS__.ga4Payloads.push({
+              event: String(eventName),
+              params: params || {},
+              ts: Date.now(),
+            });
+          }
+        } catch {}
+
+        return currentGtag.apply(this, args);
+      };
+
+      // @ts-ignore
+      wrapped.__pixelLensWrapped = true;
+
+      for (const k in currentGtag) {
+        try {
+          // @ts-ignore
+          wrapped[k] = currentGtag[k];
+        } catch {}
+      }
+
+      // @ts-ignore
+      window.gtag = wrapped;
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  attachGtagHook();
+
+        // =========================================================
+        // 3) Meta fbq hook
+        // Captures:
+        // fbq("track", "ViewContent", {...})
+        // fbq("track", "AddToCart", {...})
+        // fbq("track", "Purchase", {...})
+        // =========================================================
+        const attachFbqHook = () => {
+          try {
+            // @ts-ignore
+            const currentFbq = window.fbq;
+            // @ts-ignore
+            if (typeof currentFbq !== "function" || currentFbq.__pixelLensWrapped) {
+              return false;
+            }
+
+            const wrapped = function (...args: any[]) {
+              try {
+                // @ts-ignore
+                window.__PIXELLENS__.fbq.push(args);
+
+                const [cmd, eventName, params] = args;
+
+                if ((cmd === "track" || cmd === "trackCustom") && eventName) {
+                  // @ts-ignore
+                  window.__PIXELLENS__.metaPayloads.push({
+                    cmd: String(cmd),
+                    event: String(eventName),
+                    params: params || {},
+                    ts: Date.now(),
+                  });
+                }
+              } catch {}
+
+              return currentFbq.apply(this, args);
+            };
+
+            // @ts-ignore
+            wrapped.__pixelLensWrapped = true;
+
+            for (const k in currentFbq) {
+              try {
+                // @ts-ignore
+                wrapped[k] = currentFbq[k];
+              } catch {}
+            }
+
+            // @ts-ignore
+            window.fbq = wrapped;
+            return true;
+          } catch {
+            return false;
+          }
+        };
+
+        attachFbqHook();
+
+        // =========================================================
+        // 4) Retry hooks for delayed loading
+        // Some sites load gtag/fbq after consent or after scripts finish
+        // =========================================================
+        let tries = 0;
+        const interval = setInterval(() => {
+          tries += 1;
+          attachGtagHook();
+          attachFbqHook();
+
+          if (tries > 40) {
+            clearInterval(interval);
+          }
+        }, 250);
+      });
 
   try {
     // 1) Homepage
@@ -581,15 +1209,17 @@ async function runRuntimeScan(url: string) {
       }
     }
 
-    const hooks = await page.evaluate(() => {
-      // @ts-ignore
-      const p = (window as any).__PIXELLENS__ || {};
-      return {
-        dl: p.dl || [],
-        gtag: p.gtag || [],
-        fbq: p.fbq || [],
-      };
-    });
+      const hooks = await page.evaluate(() => {
+        // @ts-ignore
+        const p = (window as any).__PIXELLENS__ || {};
+        return {
+          dl: p.dl || [],
+          gtag: p.gtag || [],
+          fbq: p.fbq || [],
+          metaPayloads: p.metaPayloads || [],
+          ga4Payloads: p.ga4Payloads || [],
+        };
+      });
 
     for (const entry of hooks.dl as any[]) {
       const first = entry?.[0];
@@ -666,6 +1296,16 @@ async function runRuntimeScan(url: string) {
     signals.fbqEvents = Array.from(fbqEvents);
     signals.gtagEvents = Array.from(gtagEvents);
 
+    raw.trackingPayloads.metaPayloads = Array.isArray(hooks.metaPayloads)
+      ? hooks.metaPayloads.map((x: any) => safeJson(x))
+      : [];
+
+    raw.trackingPayloads.ga4Payloads = Array.isArray(hooks.ga4Payloads)
+      ? hooks.ga4Payloads.map((x: any) => safeJson(x))
+      : [];
+
+
+
     timeline.push({
       ts: now(),
       type: "validation",
@@ -715,6 +1355,27 @@ async function runRuntimeScan(url: string) {
 
 function buildRuntimeReport(result: Awaited<ReturnType<typeof runRuntimeScan>>) {
   const { signals, validation, raw } = result;
+
+  // =========================================================
+  // META MODULE — DATA SOURCES
+  // Merge JS-captured payloads + network-captured payloads
+  // =========================================================
+  const jsMetaPayloads = Array.isArray(raw?.trackingPayloads?.metaPayloads)
+    ? raw.trackingPayloads.metaPayloads
+    : [];
+
+  const networkMetaPayloads = Array.isArray(raw?.trackingPayloads?.metaNetworkEvents)
+    ? raw.trackingPayloads.metaNetworkEvents
+    : [];
+
+  const metaPayloads = [...jsMetaPayloads, ...networkMetaPayloads];
+
+  // =========================================================
+  // META MODULE — ENGINES
+  // =========================================================
+  const metaAudit = buildMetaAudit(metaPayloads);
+  const metaFunnel = buildMetaFunnel(metaAudit);
+  const metaInsights = buildMetaInsights(metaAudit, metaFunnel);
 
   const validations: ValidationCheck[] = [];
 
@@ -888,6 +1549,17 @@ function buildRuntimeReport(result: Awaited<ReturnType<typeof runRuntimeScan>>) 
   raw.report.confidence = score >= 75 ? "HIGH" : score >= 45 ? "MEDIUM" : "LOW";
   raw.report.insights = insights;
   raw.report.checks = validations;
+
+  // =========================================================
+  // META MODULE — FINAL REPORT OUTPUT
+  // Used by the Scan Detail UI
+  // =========================================================
+  (raw.report as any).metaInspector = {
+    totalCapturedMetaPayloads: metaPayloads.length,
+    events: metaAudit,
+    funnel: metaFunnel,
+    insights: metaInsights,
+  };
 
   return {
     overallScore: score,
