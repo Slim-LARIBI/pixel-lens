@@ -3,6 +3,7 @@ import ScanTabs from "@/components/scan-tabs";
 import ScanTimeline from "@/components/scan-timeline";
 import EcommerceFunnel from "@/components/ecommerce-funnel";
 import TrackingGraph from "@/components/tracking-graph";
+import TrackingDebug from "@/components/debug/tracking-debug";
 import Link from "next/link";
 import { db } from "@/lib/db";
 
@@ -197,6 +198,31 @@ export default async function ScanDetailPage({
   insights: [],
 };
 
+const googleAdsInspector = report?.googleAdsInspector ?? {
+  detected: false,
+  awIds: [],
+  conversionLabels: [],
+  conversionEvents: [],
+  remarketingDetected: false,
+  status: "NOT_CONFIRMED",
+  confidence: "LOW",
+  evidence: "No Google Ads data",
+  action: "Verify Google Ads setup",
+  insights: [],
+};
+
+const ga4Inspector = report?.ga4Inspector ?? {
+  totalCapturedGA4Payloads: 0,
+  events: [],
+  funnel: {
+    score: 0,
+    mainRisk: "No GA4 funnel data",
+    steps: [],
+  },
+  insights: [],
+};
+
+
   const platform = report?.platform || "Unknown";
   const pageType = report?.pageType || "Unknown";
   const confidence: Confidence =
@@ -208,21 +234,53 @@ export default async function ScanDetailPage({
   const consent = categoryScores.consent ?? categoryScores.Consent ?? 0;
   const capi = categoryScores.capi ?? categoryScores.CAPI ?? 0;
 
+  // =========================================================
+  // CHECKS — MAIN VALIDATIONS READ FROM REPORT
+  // We now support a 4-step ecommerce funnel:
+  // - view_item
+  // - add_to_cart
+  // - begin_checkout
+  // - purchase
+  // =========================================================
   const gtmCheck = getCheckByName(checks, "GTM");
   const ga4Check = getCheckByName(checks, "GA4");
   const metaCheck = getCheckByName(checks, "Meta Pixel");
   const consentCheck = getCheckByName(checks, "Consent");
   const viewItemCheck = getCheckByName(checks, "view_item");
   const addToCartCheck = getCheckByName(checks, "add_to_cart");
-  const checkoutCheck = getCheckByName(checks, "Checkout");
+  const beginCheckoutCheck = getCheckByName(checks, "begin_checkout");
+  const purchaseCheck = getCheckByName(checks, "purchase");
   const capiCheck = getCheckByName(checks, "CAPI");
-  const ecommerceScore =
-  (viewItemCheck.status === "CONFIRMED" ? 50 : viewItemCheck.status === "PARTIAL" ? 25 : 0) +
-  (addToCartCheck.status === "CONFIRMED" ? 50 : addToCartCheck.status === "PARTIAL" ? 25 : 0);
-  const trackingHealthScore = Math.round(
-  (gtm + ga4 + meta + consent + ecommerceScore) / 5
-);
 
+  // =========================================================
+  // ECOMMERCE SCORE — 4 STEPS
+  // Weighted business logic:
+  // - view_item       = 20%
+  // - add_to_cart     = 25%
+  // - begin_checkout  = 25%
+  // - purchase        = 30%
+  // =========================================================
+  const getCheckScore = (status: Status) => {
+    if (status === "CONFIRMED") return 100;
+    if (status === "PARTIAL") return 55;
+    if (status === "UNVERIFIED") return 20;
+    return 0;
+  };
+
+  const ecommerceScore = Math.round(
+    getCheckScore(viewItemCheck.status) * 0.2 +
+    getCheckScore(addToCartCheck.status) * 0.25 +
+    getCheckScore(beginCheckoutCheck.status) * 0.25 +
+    getCheckScore(purchaseCheck.status) * 0.3
+  );
+  // =========================================================
+  // GLOBAL TRACKING HEALTH SCORE
+  // Combines main channel scores + ecommerce score
+  // =========================================================
+  const trackingHealthScore = Math.round(
+    (gtm + ga4 + meta + consent + ecommerceScore) / 5
+  );
+  
   const pagesTested =
     (raw?.v2?.categoryPagesTested?.length || 0) +
     (raw?.v2?.productPagesTested?.length || 0) +
@@ -411,7 +469,16 @@ export default async function ScanDetailPage({
                 />
 
                 <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                  {[viewItemCheck, addToCartCheck, checkoutCheck, consentCheck, capiCheck].map(
+
+                   {[
+                    viewItemCheck,
+                    addToCartCheck,
+                    beginCheckoutCheck,
+                    purchaseCheck,
+                    consentCheck,
+                    capiCheck,
+                  ].map(
+
                     (check, idx) => (
                       <div key={idx} className="rounded-2xl border p-5">
                         <div className="flex items-start justify-between gap-3">
@@ -541,29 +608,362 @@ export default async function ScanDetailPage({
             </div>
           ),
 
-          GA4: (
-            <div className="rounded-2xl border p-6">
-              <h2 className="mb-4 text-lg font-semibold">GA4 Analysis</h2>
-              <div className="space-y-3 text-sm text-muted-foreground">
+GA4: (
+  <div className="space-y-6">
+    {/* =========================================================
+        GA4 OVERVIEW
+    ========================================================= */}
+    <div className="rounded-2xl border p-6">
+      <h2 className="mb-4 text-lg font-semibold">GA4</h2>
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <div className="rounded-2xl border p-4">
+          <div className="text-sm text-muted-foreground">Status</div>
+          <div className="mt-2">{statusBadge(ga4Check.status)}</div>
+        </div>
+
+        <div className="rounded-2xl border p-4">
+          <div className="text-sm text-muted-foreground">Confidence</div>
+          <div className="mt-2">{confidenceBadge(ga4Check.confidence)}</div>
+        </div>
+
+        <div className="rounded-2xl border p-4">
+          <div className="text-sm text-muted-foreground">Payloads Captured</div>
+          <div className="mt-2 text-2xl font-bold">
+            {ga4Inspector?.totalCapturedGA4Payloads ?? 0}
+          </div>
+        </div>
+
+        <div className="rounded-2xl border p-4">
+          <div className="text-sm text-muted-foreground">Events Audited</div>
+          <div className="mt-2 text-2xl font-bold">
+            {Array.isArray(ga4Inspector?.events) ? ga4Inspector.events.length : 0}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-5 space-y-3 text-sm text-muted-foreground">
+        <div>
+          <span className="font-medium text-foreground">Evidence:</span>{" "}
+          {ga4Check.evidence || "No direct evidence"}
+        </div>
+        <div>
+          <span className="font-medium text-foreground">Action:</span>{" "}
+          {ga4Check.action || "None"}
+        </div>
+      </div>
+    </div>
+    <TrackingDebug raw={raw} />
+    {/* =========================================================
+        GA4 FUNNEL ENGINE
+    ========================================================= */}
+    <div className="rounded-2xl border p-6">
+      <div className="mb-4 flex items-start justify-between gap-4">
+        <div>
+          <h3 className="text-lg font-semibold">GA4 Funnel Engine</h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Visual validation of core GA4 ecommerce events
+          </p>
+        </div>
+
+        <div className="text-right">
+          <div className="text-sm text-muted-foreground">Funnel Score</div>
+          <div className="text-2xl font-bold">
+            {ga4Inspector?.funnel?.score ?? 0}/100
+          </div>
+        </div>
+      </div>
+
+      <div className="mb-5 h-2 w-full rounded-full bg-slate-100">
+        <div
+          className="h-2 rounded-full bg-slate-900"
+          style={{ width: `${Math.max(0, Math.min(100, ga4Inspector?.funnel?.score ?? 0))}%` }}
+        />
+      </div>
+
+      <div className="mb-5 rounded-xl border p-4">
+        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          Main Risk
+        </div>
+        <div className="mt-2 text-sm font-medium">
+          {ga4Inspector?.funnel?.mainRisk || "No GA4 funnel data"}
+        </div>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-3">
+        {Array.isArray(ga4Inspector?.funnel?.steps) && ga4Inspector.funnel.steps.length > 0 ? (
+          ga4Inspector.funnel.steps.map((step: any) => (
+            <div key={step.step} className="rounded-2xl border p-5">
+              <div className="flex items-start justify-between gap-3">
                 <div>
-                  <span className="font-medium text-foreground">Status:</span>{" "}
-                  {ga4Check.status}
+                  <div className="text-base font-semibold">{step.step}</div>
+                  <div className="mt-1 text-sm text-muted-foreground">
+                    Captured {step.count} time{step.count > 1 ? "s" : ""}
+                  </div>
                 </div>
-                <div>
-                  <span className="font-medium text-foreground">Confidence:</span>{" "}
-                  {ga4Check.confidence}
+
+                <span
+                  className={`rounded-full border px-2 py-1 text-xs font-medium ${
+                    step.status === "OK"
+                      ? "border-green-200 bg-green-50 text-green-700"
+                      : step.status === "PARTIAL"
+                      ? "border-yellow-200 bg-yellow-50 text-yellow-700"
+                      : "border-red-200 bg-red-50 text-red-700"
+                  }`}
+                >
+                  {step.status}
+                </span>
+              </div>
+
+              <div className="mt-4">
+                <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Payload Quality
                 </div>
-                <div>
-                  <span className="font-medium text-foreground">Evidence:</span>{" "}
-                  {ga4Check.evidence || "No direct evidence"}
+                <div className="mt-2 text-lg font-semibold">{step.payloadQualityScore}/100</div>
+              </div>
+
+              <div className="mt-4">
+                <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Critical Issues
                 </div>
-                <div>
-                  <span className="font-medium text-foreground">Action:</span>{" "}
-                  {ga4Check.action || "None"}
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {Array.isArray(step.criticalIssues) && step.criticalIssues.length > 0 ? (
+                    step.criticalIssues.map((issue: string) => (
+                      <span
+                        key={issue}
+                        className="rounded-full border border-red-200 bg-red-50 px-2 py-1 text-xs text-red-700"
+                      >
+                        {issue}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="rounded-full border border-green-200 bg-green-50 px-2 py-1 text-xs text-green-700">
+                      No critical issues
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
-          ),
+          ))
+        ) : (
+          <div className="md:col-span-3 rounded-2xl border border-dashed p-6 text-sm text-muted-foreground">
+            No GA4 funnel data available yet.
+          </div>
+        )}
+      </div>
+    </div>
+
+    {/* =========================================================
+        GA4 INSIGHTS ENGINE
+    ========================================================= */}
+    <div className="rounded-2xl border p-6">
+      <div className="mb-4 flex items-center justify-between">
+        <div>
+          <h3 className="text-lg font-semibold">GA4 Insights Engine</h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Business diagnosis based on GA4 tracking quality
+          </p>
+        </div>
+      </div>
+
+      {!Array.isArray(ga4Inspector?.insights) || ga4Inspector.insights.length === 0 ? (
+        <div className="rounded-2xl border border-dashed p-6 text-sm text-muted-foreground">
+          No GA4 insights generated yet.
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {ga4Inspector.insights.map((insight: any, idx: number) => (
+            <div key={idx} className="rounded-2xl border p-5">
+              <div className="flex items-start justify-between gap-4">
+                <div className="text-base font-semibold">{insight.title}</div>
+
+                <span
+                  className={`rounded-full border px-2 py-1 text-xs font-medium ${
+                    insight.priority === "HIGH"
+                      ? "border-red-200 bg-red-50 text-red-700"
+                      : insight.priority === "MEDIUM"
+                      ? "border-yellow-200 bg-yellow-50 text-yellow-700"
+                      : "border-green-200 bg-green-50 text-green-700"
+                  }`}
+                >
+                  {insight.priority}
+                </span>
+              </div>
+
+              <div className="mt-4 grid gap-4 md:grid-cols-2">
+                <div className="rounded-xl border p-4">
+                  <div className="text-xs uppercase text-muted-foreground">
+                    Impact
+                  </div>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    {insight.impact}
+                  </p>
+                </div>
+
+                <div className="rounded-xl border p-4">
+                  <div className="text-xs uppercase text-muted-foreground">
+                    Recommended Action
+                  </div>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    {insight.action}
+                  </p>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+
+    {/* =========================================================
+        GA4 PAYLOAD INSPECTOR
+    ========================================================= */}
+    <div className="rounded-2xl border p-6">
+      <div className="mb-4 flex items-center justify-between">
+        <h3 className="text-lg font-semibold">GA4 Payload Inspector</h3>
+        <div className="text-sm text-muted-foreground">
+          Runtime event parameters captured from gtag(...)
+        </div>
+      </div>
+
+      {!Array.isArray(ga4Inspector?.events) || ga4Inspector.events.length === 0 ? (
+        <div className="rounded-2xl border border-dashed p-6 text-sm text-muted-foreground">
+          No GA4 event payload captured yet.
+        </div>
+      ) : (
+        <div className="grid gap-4 xl:grid-cols-2">
+          {ga4Inspector.events.map((item: any, idx: number) => (
+            <div key={`${item.event}-${idx}`} className="rounded-2xl border p-5">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-base font-semibold">{item.event}</div>
+                  <div className="mt-1 text-sm text-muted-foreground">
+                    Captured {item.count} time{item.count > 1 ? "s" : ""}
+                  </div>
+                </div>
+
+                <div className="rounded-full border px-3 py-1 text-sm font-semibold">
+                  {item.payloadQualityScore}/100
+                </div>
+              </div>
+
+              <div className="mt-5 grid gap-4 md:grid-cols-2">
+                <div className="rounded-xl border p-4">
+                  <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    Required Params
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {Array.isArray(item.requiredParams) && item.requiredParams.length > 0 ? (
+                      item.requiredParams.map((param: string) => (
+                        <span
+                          key={param}
+                          className="rounded-full border bg-slate-50 px-2 py-1 text-xs"
+                        >
+                          {param}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="text-sm text-muted-foreground">No required params rule</span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="rounded-xl border p-4">
+                  <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    Missing Params
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {Array.isArray(item.missingParams) && item.missingParams.length > 0 ? (
+                      item.missingParams.map((param: string) => (
+                        <span
+                          key={param}
+                          className="rounded-full border border-red-200 bg-red-50 px-2 py-1 text-xs text-red-700"
+                        >
+                          {param}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="rounded-full border border-green-200 bg-green-50 px-2 py-1 text-xs text-green-700">
+                        No missing params
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-4 rounded-xl border p-4">
+                <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Present Params
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {Array.isArray(item.presentParams) && item.presentParams.length > 0 ? (
+                    item.presentParams.map((param: string) => (
+                      <span
+                        key={param}
+                        className="rounded-full border border-green-200 bg-green-50 px-2 py-1 text-xs text-green-700"
+                      >
+                        {param}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="text-sm text-muted-foreground">No params detected</span>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-4 rounded-xl border p-4">
+                <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Critical Issues
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {Array.isArray(item.criticalIssues) && item.criticalIssues.length > 0 ? (
+                    item.criticalIssues.map((issue: string) => (
+                      <span
+                        key={issue}
+                        className="rounded-full border border-red-200 bg-red-50 px-2 py-1 text-xs text-red-700"
+                      >
+                        {issue}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="rounded-full border border-green-200 bg-green-50 px-2 py-1 text-xs text-green-700">
+                      No critical issues
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-4">
+                <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Sample Payloads
+                </div>
+
+                {Array.isArray(item.samples) && item.samples.length > 0 ? (
+                  <div className="space-y-3">
+                    {item.samples.map((sample: any, sampleIdx: number) => (
+                      <details key={sampleIdx} className="rounded-xl border p-3">
+                        <summary className="cursor-pointer text-sm font-medium">
+                          Sample #{sampleIdx + 1}
+                        </summary>
+                        <pre className="mt-3 overflow-x-auto rounded-xl bg-slate-50 p-3 text-xs">
+                          {JSON.stringify(sample?.params || {}, null, 2)}
+                        </pre>
+                      </details>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">
+                    No sample payload available.
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  </div>
+),
 
           GTM: (
             <div className="rounded-2xl border p-6">
@@ -955,51 +1355,253 @@ Meta: (
   </div>
 ),
 
+"Google Ads": (
+  <div className="space-y-6">
+    <div className="rounded-2xl border p-6">
+      <h2 className="mb-4 text-lg font-semibold">Google Ads</h2>
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <div className="rounded-2xl border p-4">
+          <div className="text-sm text-muted-foreground">Status</div>
+          <div className="mt-2">{statusBadge(googleAdsInspector.status)}</div>
+        </div>
+
+        <div className="rounded-2xl border p-4">
+          <div className="text-sm text-muted-foreground">Confidence</div>
+          <div className="mt-2">{confidenceBadge(googleAdsInspector.confidence)}</div>
+        </div>
+
+        <div className="rounded-2xl border p-4">
+          <div className="text-sm text-muted-foreground">AW IDs</div>
+          <div className="mt-2 text-2xl font-bold">
+            {Array.isArray(googleAdsInspector.awIds) ? googleAdsInspector.awIds.length : 0}
+          </div>
+        </div>
+
+        <div className="rounded-2xl border p-4">
+          <div className="text-sm text-muted-foreground">Conversion Labels</div>
+          <div className="mt-2 text-2xl font-bold">
+            {Array.isArray(googleAdsInspector.conversionLabels)
+              ? googleAdsInspector.conversionLabels.length
+              : 0}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-5 space-y-3 text-sm text-muted-foreground">
+        <div>
+          <span className="font-medium text-foreground">Evidence:</span>{" "}
+          {googleAdsInspector.evidence || "No evidence"}
+        </div>
+        <div>
+          <span className="font-medium text-foreground">Action:</span>{" "}
+          {googleAdsInspector.action || "None"}
+        </div>
+      </div>
+    </div>
+
+    <div className="rounded-2xl border p-6">
+      <div className="mb-4 flex items-center justify-between">
+        <div>
+          <h3 className="text-lg font-semibold">Google Ads Inspector</h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Detection of Google Ads conversion and remarketing infrastructure
+          </p>
+        </div>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <div className="rounded-2xl border p-4">
+          <div className="text-sm text-muted-foreground">Detected</div>
+          <div className="mt-2 text-lg font-semibold">
+            {googleAdsInspector.detected ? "Yes" : "No"}
+          </div>
+        </div>
+
+        <div className="rounded-2xl border p-4">
+          <div className="text-sm text-muted-foreground">Remarketing</div>
+          <div className="mt-2 text-lg font-semibold">
+            {googleAdsInspector.remarketingDetected ? "Detected" : "Not detected"}
+          </div>
+        </div>
+
+        <div className="rounded-2xl border p-4">
+          <div className="text-sm text-muted-foreground">Conversion Events</div>
+          <div className="mt-2 text-lg font-semibold">
+            {Array.isArray(googleAdsInspector.conversionEvents)
+              ? googleAdsInspector.conversionEvents.length
+              : 0}
+          </div>
+        </div>
+
+        <div className="rounded-2xl border p-4">
+          <div className="text-sm text-muted-foreground">AW IDs Found</div>
+          <div className="mt-2 text-lg font-semibold">
+            {Array.isArray(googleAdsInspector.awIds)
+              ? googleAdsInspector.awIds.join(", ") || "None"
+              : "None"}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-4 xl:grid-cols-2">
+        <div className="rounded-xl border p-4">
+          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Conversion Labels
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {Array.isArray(googleAdsInspector.conversionLabels) &&
+            googleAdsInspector.conversionLabels.length > 0 ? (
+              googleAdsInspector.conversionLabels.map((label: string) => (
+                <span
+                  key={label}
+                  className="rounded-full border bg-slate-50 px-2 py-1 text-xs"
+                >
+                  {label}
+                </span>
+              ))
+            ) : (
+              <span className="text-sm text-muted-foreground">No conversion labels detected</span>
+            )}
+          </div>
+        </div>
+
+        <div className="rounded-xl border p-4">
+          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Conversion Events
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {Array.isArray(googleAdsInspector.conversionEvents) &&
+            googleAdsInspector.conversionEvents.length > 0 ? (
+              googleAdsInspector.conversionEvents.map((event: string) => (
+                <span
+                  key={event}
+                  className="rounded-full border bg-slate-50 px-2 py-1 text-xs"
+                >
+                  {event}
+                </span>
+              ))
+            ) : (
+              <span className="text-sm text-muted-foreground">No conversion events detected</span>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div className="rounded-2xl border p-6">
+      <div className="mb-4 flex items-center justify-between">
+        <div>
+          <h3 className="text-lg font-semibold">Google Ads Insights Engine</h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Business diagnosis based on Google Ads tracking quality
+          </p>
+        </div>
+      </div>
+
+      {!Array.isArray(googleAdsInspector?.insights) || googleAdsInspector.insights.length === 0 ? (
+        <div className="rounded-2xl border border-dashed p-6 text-sm text-muted-foreground">
+          No Google Ads insights generated yet.
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {googleAdsInspector.insights.map((insight: any, idx: number) => (
+            <div key={idx} className="rounded-2xl border p-5">
+              <div className="flex items-start justify-between gap-4">
+                <div className="text-base font-semibold">{insight.title}</div>
+
+                <span
+                  className={`rounded-full border px-2 py-1 text-xs font-medium ${
+                    insight.priority === "HIGH"
+                      ? "border-red-200 bg-red-50 text-red-700"
+                      : insight.priority === "MEDIUM"
+                        ? "border-yellow-200 bg-yellow-50 text-yellow-700"
+                        : "border-green-200 bg-green-50 text-green-700"
+                  }`}
+                >
+                  {insight.priority}
+                </span>
+              </div>
+
+              <div className="mt-4 grid gap-4 md:grid-cols-2">
+                <div className="rounded-xl border p-4">
+                  <div className="text-xs uppercase text-muted-foreground">
+                    Impact
+                  </div>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    {insight.impact}
+                  </p>
+                </div>
+
+                <div className="rounded-xl border p-4">
+                  <div className="text-xs uppercase text-muted-foreground">
+                    Recommended Action
+                  </div>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    {insight.action}
+                  </p>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  </div>
+),
+
           Ecommerce: (
-            <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-6">
+              {/* =========================================================
+                  ECOMMERCE OVERVIEW
+                  Shows the 4-step funnel health in simple business cards
+              ========================================================= */}
               <div className="rounded-2xl border p-6">
-                <h2 className="mb-4 text-lg font-semibold">view_item</h2>
-                <div className="space-y-3 text-sm text-muted-foreground">
-                  <div>
-                    <span className="font-medium text-foreground">Status:</span>{" "}
-                    {viewItemCheck.status}
-                  </div>
-                  <div>
-                    <span className="font-medium text-foreground">Confidence:</span>{" "}
-                    {viewItemCheck.confidence}
-                  </div>
-                  <div>
-                    <span className="font-medium text-foreground">Evidence:</span>{" "}
-                    {viewItemCheck.evidence || "No direct evidence"}
-                  </div>
-                  <div>
-                    <span className="font-medium text-foreground">Action:</span>{" "}
-                    {viewItemCheck.action || "None"}
-                  </div>
+                <h2 className="mb-4 text-lg font-semibold">Ecommerce Validation</h2>
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                  {[
+                    { title: "view_item", check: viewItemCheck },
+                    { title: "add_to_cart", check: addToCartCheck },
+                    { title: "begin_checkout", check: beginCheckoutCheck },
+                    { title: "purchase", check: purchaseCheck },
+                  ].map((item) => (
+                    <div key={item.title} className="rounded-2xl border p-5">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="font-medium">{item.title}</div>
+                        {statusBadge(item.check.status)}
+                      </div>
+
+                      <div className="mt-3">{confidenceBadge(item.check.confidence)}</div>
+
+                      <div className="mt-4 text-sm text-muted-foreground">
+                        <div>
+                          <span className="font-medium text-foreground">Evidence:</span>{" "}
+                          {item.check.evidence || "No direct evidence"}
+                        </div>
+                      </div>
+
+                      <div className="mt-4 text-sm text-muted-foreground">
+                        <span className="font-medium text-foreground">Action:</span>{" "}
+                        {item.check.action || "None"}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
 
-              <div className="rounded-2xl border p-6">
-                <h2 className="mb-4 text-lg font-semibold">add_to_cart</h2>
-                <div className="space-y-3 text-sm text-muted-foreground">
-                  <div>
-                    <span className="font-medium text-foreground">Status:</span>{" "}
-                    {addToCartCheck.status}
-                  </div>
-                  <div>
-                    <span className="font-medium text-foreground">Confidence:</span>{" "}
-                    {addToCartCheck.confidence}
-                  </div>
-                  <div>
-                    <span className="font-medium text-foreground">Evidence:</span>{" "}
-                    {addToCartCheck.evidence || "No direct evidence"}
-                  </div>
-                  <div>
-                    <span className="font-medium text-foreground">Action:</span>{" "}
-                    {addToCartCheck.action || "None"}
-                  </div>
-                </div>
-              </div>
+              {/* =========================================================
+                  ECOMMERCE FUNNEL COMPONENT
+                  Reads structured funnel data from GA4 inspector
+              ========================================================= */}
+              <EcommerceFunnel
+                funnel={
+                  ga4Inspector?.funnel ?? {
+                    score: 0,
+                    mainRisk: "No GA4 funnel data",
+                    steps: [],
+                  }
+                }
+              />
             </div>
           ),
 
@@ -1078,12 +1680,17 @@ Meta: (
             </div>
           ),
 
-          Funnel: (
-            <EcommerceFunnel
-              timeline={timeline}
-              raw={raw}
-            />
-          ),
+              Funnel: (
+                <EcommerceFunnel
+                  funnel={
+                    ga4Inspector?.funnel ?? {
+                      score: 0,
+                      mainRisk: "No GA4 funnel data",
+                      steps: [],
+                    }
+                  }
+                />
+              ),
           Graph: (
             <div className="rounded-2xl border p-6">
               <h2 className="mb-4 text-lg font-semibold">

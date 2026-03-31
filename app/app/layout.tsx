@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { getCurrentUser, getUserWorkspaces } from "@/lib/session";
 import Link from "next/link";
-import { LayoutDashboard, Search, Settings, LogOut } from "lucide-react";
+import { LayoutDashboard, Search, Settings, LogOut, Boxes } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 async function AppLayoutServer({ children }: { children: React.ReactNode }) {
@@ -45,18 +45,28 @@ async function AppLayoutServer({ children }: { children: React.ReactNode }) {
                 Dashboard
               </Button>
             </Link>
+
             <Link href="/app/scan">
               <Button variant="ghost" className="w-full justify-start">
                 <Search className="mr-2 h-4 w-4" />
                 Run Scan
               </Button>
             </Link>
+
             <Link href="/app/scans">
               <Button variant="ghost" className="w-full justify-start">
                 <Search className="mr-2 h-4 w-4" />
                 All Scans
               </Button>
             </Link>
+
+            <Link href="/app/stack-scan">
+              <Button variant="ghost" className="w-full justify-start">
+                <Boxes className="mr-2 h-4 w-4" />
+                Detect Tech Stack
+              </Button>
+            </Link>
+
             <Link href="/app/settings">
               <Button variant="ghost" className="w-full justify-start">
                 <Settings className="mr-2 h-4 w-4" />
@@ -75,6 +85,7 @@ async function AppLayoutServer({ children }: { children: React.ReactNode }) {
                 <p className="truncate text-xs text-muted-foreground">{user.email}</p>
               </div>
             </div>
+
             <form action="/api/auth/signout" method="post" className="mt-2">
               <Button variant="ghost" size="sm" className="w-full justify-start" type="submit">
                 <LogOut className="mr-2 h-4 w-4" />

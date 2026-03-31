@@ -2,7 +2,13 @@
   "permissions": {
     "allow": [
       "Bash(npx create-next-app@latest . --typescript --tailwind --app --no-src-dir --import-alias \"@/*\" --use-npm --eslint --skip-git --yes)",
-      "Bash(npm install:*)"
+      "Bash(npm install:*)",
+      "Bash(wc -l /Users/slimlaribi/Dev/products/pixel-lens/app/api/scans/runtime/core/*.ts /Users/slimlaribi/Dev/products/pixel-lens/app/api/scans/runtime/modules/*/*.ts)",
+      "Bash(grep -r \"TODO\\\\|FIXME\\\\|BUG\\\\|XXX\" /Users/slimlaribi/Dev/products/pixel-lens --include=*.ts --include=*.tsx)",
+      "Bash(npm test:*)",
+      "Bash(npm list:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ]
   }
 }
