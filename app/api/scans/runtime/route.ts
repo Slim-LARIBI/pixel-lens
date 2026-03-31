@@ -62,7 +62,7 @@ export async function POST(req: Request) {
       data: {
         workspaceId,
         url,
-        profile: "QUICK" as any,
+        profile: "RUNTIME" as any,
         status: "RUNNING" as any,
         tags: JSON.stringify(["runtime:playwright", "v2:5-pages"]),
       },

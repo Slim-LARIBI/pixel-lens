@@ -49,72 +49,78 @@ async function quickHtmlScan(url: string) {
   const consentSeen =
     /cookie|consent|cmp|onetrust|cookiebot|quantcast|axeptio|didomi/i.test(html);
 
-  // Simple findings
-  const findings: any[] = [];
+  // Findings au format ValidationCheck — compatible avec la page de détail
+  type QuickCheck = {
+    check: string;
+    status: "CONFIRMED" | "NOT_CONFIRMED" | "UNVERIFIED" | "PARTIAL";
+    confidence: "HIGH" | "MEDIUM" | "LOW";
+    evidence?: string;
+    action?: string;
+  };
 
-  if (gtmIds.length === 0) {
-    findings.push({
-      severity: "HIGH",
-      title: "GTM container not detected",
-      impact: "Harder to manage tags and debugging",
-      fix: "Install Google Tag Manager snippet on all pages (head + body).",
-    });
-  } else {
-    findings.push({
-      severity: "INFO",
-      title: "GTM detected",
-      impact: "Tag management enabled",
-      fix: `Containers: ${gtmIds.join(", ")}`,
-    });
-  }
-
-  if (ga4Ids.length === 0) {
-    findings.push({
-      severity: "HIGH",
-      title: "GA4 Measurement ID not detected",
-      impact: "No GA4 page_view/events detected via HTML scan",
-      fix: "Install GA4 via GTM or gtag.js and verify measurement ID.",
-    });
-  } else {
-    findings.push({
-      severity: "INFO",
-      title: "GA4 detected",
-      impact: "Analytics collection likely enabled",
-      fix: `Measurement IDs: ${ga4Ids.join(", ")}`,
-    });
-  }
-
-  if (!metaPixel) {
-    findings.push({
-      severity: "MEDIUM",
-      title: "Meta Pixel not detected",
-      impact: "No Meta remarketing / conversion signals from this HTML snapshot",
-      fix: "Install Meta Pixel (and ideally CAPI) on the site.",
-    });
-  } else {
-    findings.push({
-      severity: "INFO",
-      title: "Meta Pixel detected",
-      impact: "Meta tracking likely enabled",
-      fix: metaPixelIds.length ? `Pixel IDs: ${metaPixelIds.join(", ")}` : "Pixel script detected",
-    });
-  }
-
-  if (!consentSeen) {
-    findings.push({
-      severity: "MEDIUM",
-      title: "Consent/CMP not detected",
-      impact: "Potential compliance risk and/or tags firing without consent",
-      fix: "Implement a CMP (OneTrust/Cookiebot/etc.) and align GTM consent mode.",
-    });
-  } else {
-    findings.push({
-      severity: "INFO",
-      title: "Consent/CMP signals detected",
-      impact: "Consent layer likely present",
-      fix: "Validate runtime: do tags fire pre/post consent?",
-    });
-  }
+  const findings: QuickCheck[] = [
+    {
+      check: "GTM",
+      status: gtmIds.length ? "CONFIRMED" : "NOT_CONFIRMED",
+      confidence: gtmIds.length ? "MEDIUM" : "HIGH",
+      evidence: gtmIds.length
+        ? `GTM containers detected: ${gtmIds.join(", ")}`
+        : "No GTM script found in HTML",
+      action: gtmIds.length
+        ? "Validate tag firing in GTM Preview."
+        : "Install Google Tag Manager snippet on all pages (head + body).",
+    },
+    {
+      check: "GA4",
+      status: ga4Ids.length ? "CONFIRMED" : "NOT_CONFIRMED",
+      confidence: ga4Ids.length ? "MEDIUM" : "HIGH",
+      evidence: ga4Ids.length
+        ? `GA4 Measurement IDs detected: ${ga4Ids.join(", ")}`
+        : "No GA4 Measurement ID found in HTML",
+      action: ga4Ids.length
+        ? "Validate events firing via GA4 DebugView."
+        : "Install GA4 via GTM or gtag.js and verify measurement ID.",
+    },
+    {
+      check: "Meta Pixel",
+      status: metaPixel ? "CONFIRMED" : "NOT_CONFIRMED",
+      confidence: metaPixel ? "MEDIUM" : "HIGH",
+      evidence: metaPixel
+        ? metaPixelIds.length
+          ? `Pixel IDs detected: ${metaPixelIds.join(", ")}`
+          : "Meta Pixel script detected in HTML"
+        : "No Meta Pixel found in HTML",
+      action: metaPixel
+        ? "Validate events in Meta Events Manager."
+        : "Install Meta Pixel (and ideally CAPI) on the site.",
+    },
+    {
+      check: "Consent",
+      status: consentSeen ? "PARTIAL" : "NOT_CONFIRMED",
+      confidence: consentSeen ? "LOW" : "MEDIUM",
+      evidence: consentSeen
+        ? "Consent/CMP signals detected in HTML"
+        : "No CMP or consent signals found in HTML",
+      action: consentSeen
+        ? "Validate runtime: do tags fire pre/post consent?"
+        : "Implement a CMP (OneTrust/Cookiebot/etc.) and align GTM consent mode.",
+    },
+    // Ecommerce events — non vérifiables via scan HTML, nécessitent un Runtime Scan
+    ...["view_item", "add_to_cart", "begin_checkout", "purchase"].map((ev) => ({
+      check: ev,
+      status: "UNVERIFIED" as const,
+      confidence: "LOW" as const,
+      evidence: "Quick HTML scan cannot validate event firing.",
+      action: "Run a Runtime Scan to validate real network calls.",
+    })),
+    {
+      check: "CAPI",
+      status: "UNVERIFIED" as const,
+      confidence: "LOW" as const,
+      evidence: "Server-side CAPI not detectable via HTML scan.",
+      action: "Verify CAPI setup via Meta Events Manager.",
+    },
+  ];
 
   // Simple scoring logic (v1)
   let score = 0;
@@ -175,7 +181,9 @@ export async function POST(req: Request) {
 
     const body = await req.json().catch(() => ({}));
     const url = String(body?.url || "").trim();
-    const profile = String(body?.profile || "QUICK").trim();
+    const VALID_PROFILES = ["QUICK", "STANDARD", "DEEP", "RUNTIME"] as const;
+    const rawProfile = String(body?.profile || "QUICK").trim().toUpperCase();
+    const profile = (VALID_PROFILES as readonly string[]).includes(rawProfile) ? rawProfile : "QUICK";
     let workspaceId = String(body?.workspaceId || "").trim();
 
     if (!url || !/^https?:\/\//i.test(url)) {
