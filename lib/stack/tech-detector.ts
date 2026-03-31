@@ -521,6 +521,365 @@ export function detectTechStack({
     pushCandidate(store, "security", "Consent Management Platform", 60, "CMP markup/runtime detected");
   }
 
+  if (hasRequest(requestUrls, ["app.usercentrics.eu"])) {
+    pushCandidate(store, "security", "Usercentrics", 95, "Usercentrics CMP detected");
+  }
+
+  if (hasRequest(requestUrls, ["consent.trustarc.com"])) {
+    pushCandidate(store, "security", "TrustArc", 95, "TrustArc CMP detected");
+  }
+
+  if (hasRequest(requestUrls, ["cdn.iubenda.com"])) {
+    pushCandidate(store, "security", "Iubenda", 95, "Iubenda CMP detected");
+  }
+
+  if (hasRequest(requestUrls, ["cdn-cookieyes.com"])) {
+    pushCandidate(store, "security", "CookieYes", 95, "CookieYes CMP detected");
+  }
+
+  if (hasRequest(requestUrls, ["hcaptcha.com"])) {
+    pushCandidate(store, "security", "hCaptcha", 95, "hCaptcha detected");
+  }
+
+  if (hasRequest(requestUrls, ["challenges.cloudflare.com/turnstile"])) {
+    pushCandidate(store, "security", "Cloudflare Turnstile", 95, "Cloudflare Turnstile CAPTCHA detected");
+  }
+
+  // =========================================================
+  // RUNTIME GLOBALS — injected by Playwright window inspection
+  // The route adds entries like "runtime:window.Shopify" to
+  // enrichedRequests when the global exists at runtime.
+  // =========================================================
+  if (hasRequest(requestUrls, ["runtime:window.shopify", "runtime:shopifyanalytics"])) {
+    pushCandidate(store, "platform", "Shopify", 90, "window.Shopify confirmed at runtime");
+    pushCandidate(store, "ecommerce", "Shopify Storefront", 90, "window.Shopify confirmed at runtime");
+  }
+
+  if (hasRequest(requestUrls, ["runtime:gtag"])) {
+    pushCandidate(store, "tracking", "Google Analytics 4 / GTM", 80, "gtag() confirmed at runtime");
+  }
+
+  if (hasRequest(requestUrls, ["runtime:fbq"])) {
+    pushCandidate(store, "tracking", "Meta Pixel", 90, "fbq() confirmed at runtime");
+  }
+
+  if (hasRequest(requestUrls, ["runtime:datalayer"])) {
+    pushCandidate(store, "tracking", "Google Tag Manager", 85, "dataLayer confirmed at runtime");
+  }
+
+  // =========================================================
+  // COOKIE-BASED DETECTION
+  // enrichedRequests contains cookie:name=value entries
+  // =========================================================
+  if (hasRequest(requestUrls, ["cookie:_shopify_y", "cookie:_shopify_s", "cookie:_shopify_sa"])) {
+    pushCandidate(store, "platform", "Shopify", 85, "Shopify session cookie detected");
+  }
+
+  if (hasRequest(requestUrls, ["cookie:_ga", "cookie:_ga_"])) {
+    pushCandidate(store, "tracking", "Google Analytics 4", 70, "GA cookie (_ga) detected");
+  }
+
+  if (hasRequest(requestUrls, ["cookie:_fbp", "cookie:_fbc"])) {
+    pushCandidate(store, "tracking", "Meta Pixel", 75, "Meta Pixel cookie (_fbp/_fbc) detected");
+  }
+
+  if (hasRequest(requestUrls, ["cookie:_gcl_au", "cookie:_gcl_aw"])) {
+    pushCandidate(store, "tracking", "Google Ads", 75, "Google Ads cookie (_gcl_au/_gcl_aw) detected");
+  }
+
+  if (hasRequest(requestUrls, ["cookie:_ttp", "cookie:_tt_enable_cookie"])) {
+    pushCandidate(store, "tracking", "TikTok Pixel", 75, "TikTok Pixel cookie (_ttp) detected");
+  }
+
+  if (hasRequest(requestUrls, ["cookie:_scid", "cookie:_sctr"])) {
+    pushCandidate(store, "tracking", "Snapchat Pixel", 75, "Snapchat cookie (_scid) detected");
+  }
+
+  // =========================================================
+  // PLATFORM — WIX
+  // =========================================================
+  if (hasRequest(requestUrls, ["static.wixstatic.com", "wix-code-sdk", "wixstatic.com"])) {
+    pushCandidate(store, "platform", "Wix", 90, "Wix CDN asset detected");
+  }
+
+  if (regex(htmlRaw, /wixsite\.com|wix-code|\.wixpress\.com|wixSiteProperties/i)) {
+    pushCandidate(store, "platform", "Wix", 80, "Wix platform signature detected");
+  }
+
+  // =========================================================
+  // PLATFORM — WEBFLOW
+  // =========================================================
+  if (hasRequest(requestUrls, ["webflow.com", "assets.website-files.com"])) {
+    pushCandidate(store, "platform", "Webflow", 90, "Webflow asset detected");
+  }
+
+  if (regex(htmlRaw, /w-webflow-badge|data-wf-page|data-wf-site|webflow\.css/i)) {
+    pushCandidate(store, "platform", "Webflow", 85, "Webflow DOM signature detected");
+  }
+
+  // =========================================================
+  // PLATFORM — BIGCOMMERCE
+  // =========================================================
+  if (hasRequest(requestUrls, ["bigcommerce.com", "cdn11.bigcommerce.com", "stencil-utils"])) {
+    pushCandidate(store, "platform", "BigCommerce", 90, "BigCommerce asset/CDN detected");
+    pushCandidate(store, "ecommerce", "BigCommerce Storefront", 90, "BigCommerce platform detected");
+  }
+
+  if (regex(htmlRaw, /bigcommerce|stencil_utils|BCData\./i)) {
+    pushCandidate(store, "platform", "BigCommerce", 75, "BigCommerce signature in HTML");
+  }
+
+  // =========================================================
+  // PLATFORM — SQUARESPACE
+  // =========================================================
+  if (hasRequest(requestUrls, ["squarespace.com", "sqspcdn.com", "static1.squarespace.com"])) {
+    pushCandidate(store, "platform", "Squarespace", 90, "Squarespace CDN asset detected");
+  }
+
+  if (regex(htmlRaw, /sqs-video-wrapper|squarespace\.com|Static\.SQUARESPACE_CONTEXT/i)) {
+    pushCandidate(store, "platform", "Squarespace", 80, "Squarespace runtime signature detected");
+  }
+
+  // =========================================================
+  // FRONTEND — NUXT.JS
+  // =========================================================
+  if (hasRequest(requestUrls, ["/_nuxt/"])) {
+    pushCandidate(store, "frontend", "Nuxt.js", 90, "Nuxt.js static assets detected");
+    pushCandidate(store, "frontend", "Vue.js", 70, "Nuxt.js implies Vue");
+  }
+
+  if (regex(htmlRaw, /__NUXT__|window\.__NUXT__|nuxt-link|<nuxt>/i)) {
+    pushCandidate(store, "frontend", "Nuxt.js", 85, "Nuxt.js runtime object or component detected");
+  }
+
+  // =========================================================
+  // FRONTEND — SVELTEKIT / SVELTE
+  // =========================================================
+  if (hasRequest(requestUrls, ["/_app/immutable/"])) {
+    pushCandidate(store, "frontend", "SvelteKit", 90, "SvelteKit immutable asset detected");
+  }
+
+  if (regex(htmlRaw, /__sveltekit_data|sveltekit:data|svelte-announcer/i)) {
+    pushCandidate(store, "frontend", "SvelteKit", 85, "SvelteKit signature detected");
+  }
+
+  if (regex(htmlRaw, /svelte-[\w]+|data-svelte/i)) {
+    pushCandidate(store, "frontend", "Svelte", 60, "Svelte component marker detected");
+  }
+
+  // =========================================================
+  // FRONTEND — GATSBY
+  // =========================================================
+  if (regex(htmlRaw, /___gatsby|GATSBY_BUILD_STAGE|gatsby-focus-wrapper/i)) {
+    pushCandidate(store, "frontend", "Gatsby", 90, "Gatsby runtime object detected");
+    pushCandidate(store, "frontend", "React", 70, "Gatsby implies React");
+  }
+
+  if (hasRequest(requestUrls, ["/gatsby-"])) {
+    pushCandidate(store, "frontend", "Gatsby", 65, "Gatsby asset path detected");
+  }
+
+  // =========================================================
+  // FRONTEND — ALPINE.JS
+  // =========================================================
+  if (hasRequest(requestUrls, ["alpinejs", "alpine.js", "alpine.min.js"])) {
+    pushCandidate(store, "frontend", "Alpine.js", 85, "Alpine.js asset detected");
+  }
+
+  if (regex(htmlRaw, /\bx-data=|x-init=|x-show=|x-on:click=/i)) {
+    pushCandidate(store, "frontend", "Alpine.js", 70, "Alpine.js directive detected");
+  }
+
+  // =========================================================
+  // FRONTEND — GSAP (animation)
+  // =========================================================
+  if (hasRequest(requestUrls, ["gsap.min.js", "gsap-core", "cdnjs.cloudflare.com/ajax/libs/gsap"])) {
+    pushCandidate(store, "frontend", "GSAP", 85, "GSAP animation library detected");
+  }
+
+  // =========================================================
+  // TRACKING — TIKTOK PIXEL
+  // =========================================================
+  if (hasRequest(requestUrls, ["analytics.tiktok.com", "business-api.tiktok.com"])) {
+    pushCandidate(store, "tracking", "TikTok Pixel", 95, "TikTok Pixel network request detected");
+  }
+
+  if (regex(htmlRaw, /ttq\.track|TiktokAnalyticsObject|ttq\.page|TikTok Pixel/i)) {
+    pushCandidate(store, "tracking", "TikTok Pixel", 65, "TikTok Pixel script signature detected");
+  }
+
+  // =========================================================
+  // TRACKING — SNAPCHAT PIXEL
+  // =========================================================
+  if (hasRequest(requestUrls, ["tr.snapchat.com", "sc-static.net/scevent.min.js"])) {
+    pushCandidate(store, "tracking", "Snapchat Pixel", 95, "Snapchat Pixel network request detected");
+  }
+
+  if (regex(htmlRaw, /\bsnaptr\b|\bsnapchat pixel\b/i)) {
+    pushCandidate(store, "tracking", "Snapchat Pixel", 55, "Snapchat Pixel script signature detected");
+  }
+
+  // =========================================================
+  // TRACKING — PINTEREST TAG
+  // =========================================================
+  if (hasRequest(requestUrls, ["ct.pinterest.com", "s.pinimg.com/ct/core.js"])) {
+    pushCandidate(store, "tracking", "Pinterest Tag", 95, "Pinterest Tag network request detected");
+  }
+
+  if (regex(htmlRaw, /\bpintrk\b|pinterest_tag|PinTag/i)) {
+    pushCandidate(store, "tracking", "Pinterest Tag", 60, "Pinterest Tag script detected");
+  }
+
+  // =========================================================
+  // TRACKING — TWITTER / X ADS PIXEL
+  // =========================================================
+  if (hasRequest(requestUrls, ["static.ads-twitter.com/uwt.js", "analytics.twitter.com"])) {
+    pushCandidate(store, "tracking", "Twitter / X Pixel", 95, "Twitter Ads pixel network request detected");
+  }
+
+  if (regex(htmlRaw, /\btwq\s*\(|twitter_pixel|twttr\.conversion/i)) {
+    pushCandidate(store, "tracking", "Twitter / X Pixel", 60, "Twitter Pixel script signature detected");
+  }
+
+  // =========================================================
+  // TRACKING — LINKEDIN INSIGHT TAG
+  // =========================================================
+  if (hasRequest(requestUrls, ["snap.licdn.com/li.lms-analytics/insight.min.js"])) {
+    pushCandidate(store, "tracking", "LinkedIn Insight Tag", 95, "LinkedIn Insight Tag detected");
+  }
+
+  if (regex(htmlRaw, /_linkedin_partner_id|linkedin_partner/i)) {
+    pushCandidate(store, "tracking", "LinkedIn Insight Tag", 65, "LinkedIn Insight partner ID detected");
+  }
+
+  // =========================================================
+  // TRACKING — BING / MICROSOFT ADS
+  // =========================================================
+  if (hasRequest(requestUrls, ["bat.bing.com", "bat.r.msn.com"])) {
+    pushCandidate(store, "tracking", "Microsoft / Bing Ads", 95, "Bing UET network request detected");
+  }
+
+  if (regex(htmlRaw, /\buetq\b|microsoft\.com\/bat\.js/i)) {
+    pushCandidate(store, "tracking", "Microsoft / Bing Ads", 60, "Bing UET script signature detected");
+  }
+
+  // =========================================================
+  // TRACKING — CRITEO
+  // =========================================================
+  if (hasRequest(requestUrls, ["static.criteo.net", "rtax.criteo.com", "cas.criteo.com"])) {
+    pushCandidate(store, "tracking", "Criteo", 95, "Criteo network request detected");
+  }
+
+  if (regex(htmlRaw, /\bcriteo_q\b|window\.criteo_q|CriteoId/i)) {
+    pushCandidate(store, "tracking", "Criteo", 65, "Criteo script signature detected");
+  }
+
+  // =========================================================
+  // TRACKING — HEAP ANALYTICS
+  // =========================================================
+  if (hasRequest(requestUrls, ["heapanalytics.com", "cdn.heapanalytics.com"])) {
+    pushCandidate(store, "tracking", "Heap Analytics", 90, "Heap Analytics detected");
+  }
+
+  // =========================================================
+  // TRACKING — MIXPANEL
+  // =========================================================
+  if (hasRequest(requestUrls, ["cdn.mxpnl.com", "api.mixpanel.com"])) {
+    pushCandidate(store, "tracking", "Mixpanel", 90, "Mixpanel detected");
+  }
+
+  // =========================================================
+  // TRACKING — AMPLITUDE
+  // =========================================================
+  if (hasRequest(requestUrls, ["cdn.amplitude.com", "api.amplitude.com"])) {
+    pushCandidate(store, "tracking", "Amplitude", 90, "Amplitude analytics detected");
+  }
+
+  // =========================================================
+  // TRACKING — POSTHOG
+  // =========================================================
+  if (hasRequest(requestUrls, ["posthog.com", "app.posthog.com"])) {
+    pushCandidate(store, "tracking", "PostHog", 90, "PostHog analytics detected");
+  }
+
+  // =========================================================
+  // INFRASTRUCTURE — VERCEL
+  // =========================================================
+  if (hasRequest(requestUrls, ["vercel.app", "_vercel", "vercel.com"])) {
+    pushCandidate(store, "infrastructure", "Vercel", 85, "Vercel deployment detected");
+  }
+
+  if (regex(htmlRaw, /__NEXT_DATA__|_vercel|vercel\.live/i)) {
+    pushCandidate(store, "infrastructure", "Vercel", 60, "Vercel marker detected in HTML");
+  }
+
+  // =========================================================
+  // INFRASTRUCTURE — NETLIFY
+  // =========================================================
+  if (hasRequest(requestUrls, ["netlify.app", "netlify.com", "netlify.live"])) {
+    pushCandidate(store, "infrastructure", "Netlify", 85, "Netlify deployment detected");
+  }
+
+  if (regex(htmlRaw, /netlify/i)) {
+    pushCandidate(store, "infrastructure", "Netlify", 45, "Netlify reference in HTML");
+  }
+
+  // =========================================================
+  // INFRASTRUCTURE — AKAMAI
+  // =========================================================
+  if (hasRequest(requestUrls, ["akamaized.net", "akamaihd.net", "akamaiapis.net"])) {
+    pushCandidate(store, "infrastructure", "Akamai", 90, "Akamai CDN asset detected");
+  }
+
+  // =========================================================
+  // ECOMMERCE — PAYMENTS & BNPL
+  // =========================================================
+  if (hasRequest(requestUrls, ["x.klarnacdn.net", "klarna.com/direct"])) {
+    pushCandidate(store, "ecommerce", "Klarna", 95, "Klarna payment widget detected");
+  }
+
+  if (hasHtml(htmlLower, ["klarna"])) {
+    pushCandidate(store, "ecommerce", "Klarna", 45, "Klarna keyword detected");
+  }
+
+  if (hasRequest(requestUrls, ["checkoutshopper-live.adyen.com", "adyen.com"])) {
+    pushCandidate(store, "ecommerce", "Adyen", 95, "Adyen payment SDK detected");
+  }
+
+  if (hasRequest(requestUrls, ["js.afterpay.com", "portal.afterpay.com"])) {
+    pushCandidate(store, "ecommerce", "Afterpay / Clearpay", 95, "Afterpay SDK detected");
+  }
+
+  // =========================================================
+  // ECOMMERCE — REVIEWS & SOCIAL PROOF
+  // =========================================================
+  if (hasRequest(requestUrls, ["widget.trustpilot.com", "invitations.trustpilot.com"])) {
+    pushCandidate(store, "ecommerce", "Trustpilot", 95, "Trustpilot widget detected");
+  }
+
+  if (hasRequest(requestUrls, ["staticw2.yotpo.com", "api.yotpo.com"])) {
+    pushCandidate(store, "ecommerce", "Yotpo", 95, "Yotpo reviews widget detected");
+  }
+
+  if (hasRequest(requestUrls, ["stamped.io", "cdn1.stamped.io"])) {
+    pushCandidate(store, "ecommerce", "Stamped.io", 90, "Stamped reviews detected");
+  }
+
+  // =========================================================
+  // ECOMMERCE — LIVE CHAT / SUPPORT
+  // =========================================================
+  if (hasRequest(requestUrls, ["config.gorgias.chat", "gorgias.com"])) {
+    pushCandidate(store, "ecommerce", "Gorgias", 95, "Gorgias chat widget detected");
+  }
+
+  if (hasRequest(requestUrls, ["code.tidio.co"])) {
+    pushCandidate(store, "ecommerce", "Tidio", 95, "Tidio chat widget detected");
+  }
+
+  if (hasRequest(requestUrls, ["client.crisp.chat"])) {
+    pushCandidate(store, "ecommerce", "Crisp", 95, "Crisp chat widget detected");
+  }
+
   return {
     platform: finalizeBucket(store, "platform"),
     frontend: finalizeBucket(store, "frontend"),

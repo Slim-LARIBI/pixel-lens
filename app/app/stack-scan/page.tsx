@@ -382,7 +382,7 @@ export default function StackScanPage() {
                 </div>
 
                 <div className="mt-4 space-y-2">
-                  {[...result.platform, ...result.ecommerce].slice(0, 4).map((item) => (
+                  {[...(result?.platform ?? []), ...(result?.ecommerce ?? [])].slice(0, 4).map((item) => (
                     <div key={item.name} className="flex items-center justify-between rounded-xl border px-3 py-2">
                       <span className="text-sm font-medium">{item.name}</span>
                       {confidenceBadge(item.confidence)}
@@ -406,7 +406,7 @@ export default function StackScanPage() {
                 </div>
 
                 <div className="mt-4 space-y-2">
-                  {result.tracking.slice(0, 5).map((item) => (
+                  {(result?.tracking ?? []).slice(0, 5).map((item) => (
                     <div key={item.name} className="flex items-center justify-between rounded-xl border px-3 py-2">
                       <span className="text-sm font-medium">{item.name}</span>
                       {confidenceBadge(item.confidence)}
@@ -430,7 +430,7 @@ export default function StackScanPage() {
                 </div>
 
                 <div className="mt-4 space-y-2">
-                  {[...result.frontend, ...result.infrastructure, ...result.security]
+                  {[...(result?.frontend ?? []), ...(result?.infrastructure ?? []), ...(result?.security ?? [])]
                     .slice(0, 5)
                     .map((item) => (
                       <div key={item.name} className="flex items-center justify-between rounded-xl border px-3 py-2">

@@ -8,7 +8,8 @@
       "Bash(npm test:*)",
       "Bash(npm list:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(npx tsc:*)"
     ]
   }
 }
