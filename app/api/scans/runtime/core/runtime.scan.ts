@@ -998,7 +998,7 @@ export async function runRuntimeScan(url: string): Promise<RuntimeScanResult> {
     // =====================================================
     // HOMEPAGE
     // =====================================================
-    await page.goto(url, { waitUntil: "networkidle", timeout: 45000 });
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
     pagesVisited.push(page.url());
     raw.finalUrl = page.url();
 
@@ -1056,7 +1056,7 @@ export async function runRuntimeScan(url: string): Promise<RuntimeScanResult> {
       const categoryUrl = candidates.categoryPages[0];
 
       try {
-        await page.goto(categoryUrl, { waitUntil: "networkidle", timeout: 45000 });
+        await page.goto(categoryUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
         await page.waitForTimeout(1200);
 
         pagesVisited.push(page.url());
@@ -1094,7 +1094,7 @@ export async function runRuntimeScan(url: string): Promise<RuntimeScanResult> {
 
     for (const productUrl of productTargets) {
       try {
-        await page.goto(productUrl, { waitUntil: "networkidle", timeout: 45000 });
+        await page.goto(productUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
         await page.waitForTimeout(2000);
 
         const currentUrl = page.url();
@@ -1184,7 +1184,7 @@ if (checkoutAttempt?.clicked && reachedCheckoutByUrl) {
     // =====================================================
     for (const checkoutUrl of candidates.checkoutPages.slice(0, 2)) {
       try {
-        await page.goto(checkoutUrl, { waitUntil: "networkidle", timeout: 45000 });
+        await page.goto(checkoutUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
         await page.waitForTimeout(1500);
 
         const currentUrl = page.url();
@@ -1214,7 +1214,7 @@ if (checkoutAttempt?.clicked && reachedCheckoutByUrl) {
     // =====================================================
     for (const purchaseUrl of candidates.purchasePages.slice(0, 2)) {
       try {
-        await page.goto(purchaseUrl, { waitUntil: "networkidle", timeout: 45000 });
+        await page.goto(purchaseUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
         await page.waitForTimeout(1500);
 
         const currentUrl = page.url();
