@@ -9,6 +9,8 @@ import { runRuntimeScan } from "./core/runtime.scan";
 export const runtime = "nodejs";
 
 export async function POST(req: Request) {
+  let scanId: string | null = null;
+
   try {
     const devBypass = req.headers.get("x-dev-bypass") === "1";
     const session = devBypass ? null : await getServerSession(authOptions);
@@ -69,6 +71,8 @@ export async function POST(req: Request) {
       select: { id: true },
     });
 
+    scanId = scan.id;
+
     const result = await runRuntimeScan(url);
     const report = buildRuntimeReport(result);
 
@@ -88,6 +92,19 @@ export async function POST(req: Request) {
     return NextResponse.json({ id: scan.id }, { status: 201 });
   } catch (err: any) {
     console.error("POST /api/scans/runtime error:", err);
+
+    if (scanId) {
+      await db.scan
+        .update({
+          where: { id: scanId },
+          data: {
+            status: "FAILED" as any,
+            errorMessage: String(err?.message || "Runtime scan failed"),
+          },
+        })
+        .catch(() => {});
+    }
+
     return NextResponse.json(
       { error: err?.message || "Internal Server Error" },
       { status: 500 }

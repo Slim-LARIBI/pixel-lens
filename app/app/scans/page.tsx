@@ -14,6 +14,30 @@ export default async function ScansListPage() {
   const workspaces = await getUserWorkspaces(user.id);
   const workspace = workspaces[0];
 
+  if (!workspace) {
+    return (
+      <div className="space-y-8">
+        <div>
+          <h1 className="text-3xl font-bold">All Scans</h1>
+          <p className="text-muted-foreground">View and manage your scan history</p>
+        </div>
+        <Card>
+          <CardContent className="py-12 text-center">
+            <p className="mb-4 text-muted-foreground">
+              No workspace found. Run your first scan to get started.
+            </p>
+            <Link href="/app/scan">
+              <Button>
+                <Plus className="mr-2 h-4 w-4" />
+                Run First Scan
+              </Button>
+            </Link>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   const scans = await db.scan.findMany({
     where: { workspaceId: workspace.id },
     orderBy: { createdAt: "desc" },
